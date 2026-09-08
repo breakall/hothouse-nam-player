@@ -1,0 +1,33 @@
+TARGET = hothouse_nam_a2
+
+APP_TYPE = BOOT_QSPI
+OPT = -Ofast
+CPP_STANDARD = -std=gnu++17
+GCC_PATH ?= ../external/arm-toolchain-pkg/Payload/bin
+LDFLAGS = -T$(abspath nam_a2_sections.lds) -u _printf_float
+MODEL ?=
+EMBED_SCRIPT = ../tools/embed_a2_model.py
+
+CPP_SOURCES = \
+  hothouse_nam_a2.cpp \
+  hothouse.cpp
+
+C_INCLUDES = \
+  -I. \
+  -I../external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam
+
+C_DEFS = \
+  -D__ARM_ARCH_7EM__
+
+LIBDAISY_DIR = ../HothouseExamples/libDaisy
+DAISYSP_DIR = ../HothouseExamples/DaisySP
+
+SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
+include $(SYSTEM_FILES_DIR)/Makefile
+
+include ../HothouseExamples/src/Makefile
+
+CPPFLAGS += -ffast-math -funroll-loops -ftree-vectorize -fmove-loop-invariants
+
+embed-model:
+	python3 $(EMBED_SCRIPT) "$(MODEL)" -o embedded_a2_model.h

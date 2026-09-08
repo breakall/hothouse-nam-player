@@ -50,7 +50,7 @@ include ../HothouseExamples/src/Makefile
 CPPFLAGS += -fexceptions -ffast-math -funroll-loops -ftree-vectorize -fmove-loop-invariants
 
 embed-model:
-	python3 $(EMBED_SCRIPT) $(MODEL) -o embedded_model.h
+	python3 $(EMBED_SCRIPT) "$(MODEL)" -o embedded_model.h
 
 embed-ir:
-	python3 $(IR_EMBED_SCRIPT) $(IR) -o embedded_ir.h
+	python3 $(IR_EMBED_SCRIPT) "$(IR)" -o embedded_ir.h

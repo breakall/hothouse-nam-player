@@ -15,13 +15,14 @@ Status: complete on hardware, 2026-09-08.
 
 ## v0.2 — A2-Lite feasibility
 
-Status: next.
+Status: firmware build complete; hardware validation pending.
 
-- Upgrade NeuralAmpModelerCore and binary loading to A2-capable versions.
-- Select A2-Lite explicitly from a packed A2 model.
+- Add a separate A2-Lite build target without changing the A1 backend. Done.
+- Select and validate A2-Lite explicitly from a packed A2 model. Done.
+- Place hot state in DTCM and the 76 KB history arena in D2 SRAM. Done.
+- Preserve dry fallback and enclosure-safe recovery. Done.
 - Run a baked-cab A2 capture on the Daisy Seed.
 - Record model-only cycles and worst-case callback cycles.
-- Preserve dry fallback and enclosure-safe recovery.
 - Decide whether enough headroom remains for EQ and ambience.
 
 ## v0.3 — Dream-style controls

@@ -1,8 +1,9 @@
 # Hothouse NAM Pedal
 
 Open-source NAM firmware for the Cleveland Music Co. Hothouse / Daisy Seed.
-The first hardware milestone runs an embedded A1 Nano-ReLU amp-and-cab capture
-at 48 kHz with reliable bypass and enclosure-safe firmware recovery.
+The project has separate build-time backends for the hardware-validated A1
+Nano-ReLU path and an experimental A2-Lite path. Both run at 48 kHz with
+reliable bypass and enclosure-safe firmware recovery.
 
 ## Hardware-validated milestone
 
@@ -37,6 +38,13 @@ cd hothouse-nam-pedal
 ./tools/setup_dependencies.sh
 ```
 
+## Choose a backend at build time
+
+The backend is compiled into the firmware; only one is present in a binary.
+Both variants keep the same MVP controls and safety behavior.
+
+### A1 Nano-ReLU
+
 Build the NAMB converter:
 
 ```sh
@@ -45,38 +53,59 @@ cmake -S nam-pedal/nam-binary-loader -B build/nam-binary-loader \
 cmake --build build/nam-binary-loader
 ```
 
-Convert and embed a locally licensed A1 Nano-ReLU model:
+Convert a locally licensed A1 Nano-ReLU model to NAMB, then build from the
+repository root:
 
 ```sh
 ./build/nam-binary-loader/nam2namb capture.nam capture.namb
-cd firmware
-make embed-model MODEL="$PWD/../capture.namb"
-make clean
-make USE_IR=0
+make a1 MODEL="$PWD/capture.namb" USE_IR=0
 ```
 
 For an amp-only capture, embed a mono 48 kHz WAV and build with the IR enabled:
 
 ```sh
+cd firmware
 make embed-ir IR=/absolute/path/to/cabinet-48k.wav
-make clean
-make USE_IR=1
+cd ..
+make a1 MODEL="$PWD/capture.namb" USE_IR=1
 ```
+
+### A2-Lite
+
+Set up the pinned A2 runtime once, then pass an A2 `.nam` file directly:
+
+```sh
+make setup-a2
+make a2 MODEL="/absolute/path/to/capture.nam"
+```
+
+For a `SlimmableContainer`, the build selects submodel 0 and rejects it unless
+it is the supported 3-channel A2-Lite architecture (1,871 weights, LeakyReLU,
+48 kHz). Full A2 is deliberately rejected instead of producing firmware that
+cannot meet the Daisy Seed's real-time budget. The current A2 MVP expects a
+capture with its cabinet baked in; separate IR processing can be evaluated
+after hardware cycle measurements.
+
+Build outputs:
+
+- A1: `firmware/build/a1/hothouse_nam.bin`
+- A2-Lite: `firmware/build/a2/hothouse_nam_a2.bin`
 
 From the repository root, start the enclosure-safe watcher and reconnect USB:
 
 ```sh
-./tools/wait_and_flash_hothouse.sh
+./tools/wait_and_flash_hothouse.sh firmware/build/a2/hothouse_nam_a2.bin
 ```
 
 ## Roadmap
 
-The next milestone is A2-Lite feasibility on the same Daisy Seed. See
-[MILESTONES.md](MILESTONES.md).
+The next step is hardware validation of the A2-Lite build, followed by the
+Dream-style controls. See [MILESTONES.md](MILESTONES.md).
 
 ## Licensing
 
 Project firmware is distributed under GPL-3.0, matching HothouseExamples.
 NeuralAmpModelerCore, nam-binary-loader, libDaisy and DaisySP retain their own
-licenses. NAM captures and cabinet IRs are not included; users must supply
-assets they are licensed to use.
+licenses. The A2 build uses a pinned MIT-licensed runtime from DaisySeedProjects;
+see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). NAM captures and cabinet
+IRs are not included; users must supply assets they are licensed to use.
