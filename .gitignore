@@ -1,0 +1,16 @@
+.DS_Store
+build/
+firmware/build/
+firmware/embedded_model.h
+firmware/embedded_ir.h
+external/
+*.nam
+*.namb
+*.wav
+*.aiff
+*.aif
+*.bin
+*.elf
+*.hex
+__MACOSX/
+_MACOSX/

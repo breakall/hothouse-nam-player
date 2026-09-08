@@ -1,0 +1,6 @@
+[submodule "HothouseExamples"]
+	path = HothouseExamples
+	url = https://github.com/clevelandmusicco/HothouseExamples
+[submodule "nam-pedal"]
+	path = nam-pedal
+	url = https://github.com/tone-3000/nam-pedal

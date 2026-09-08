@@ -1,0 +1,123 @@
+diff --git a/namb/get_dsp_namb.cpp b/namb/get_dsp_namb.cpp
+index 41aa346..94d4f3f 100644
+--- a/namb/get_dsp_namb.cpp
++++ b/namb/get_dsp_namb.cpp
+@@ -14,7 +14,6 @@
+ #include <NAM/lstm.h>
+ #include <NAM/model_config.h>
+ #include <NAM/wavenet.h>
+-#include "binary_parser_registry.h"
+ #include "namb_format.h"
+
+ using namespace nam::namb;
+@@ -135,8 +134,6 @@ ParsedMetadata read_metadata_block(BinaryReader& r)
+ nam::ModelMetadata to_model_metadata(const ParsedMetadata& pm)
+ {
+   nam::ModelMetadata meta;
+-  meta.version = std::to_string(pm.version_major) + "." + std::to_string(pm.version_minor) + "."
+-                 + std::to_string(pm.version_patch);
+   meta.sample_rate = pm.sample_rate;
+   if (pm.meta_flags & META_HAS_LOUDNESS)
+     meta.loudness = pm.loudness;
+@@ -147,6 +144,20 @@ nam::ModelMetadata to_model_metadata(const ParsedMetadata& pm)
+   return meta;
+ }
+
++std::unique_ptr<nam::DSP> construct_dsp(std::unique_ptr<nam::ModelConfig> config,
++                                        std::vector<float> weights,
++                                        const nam::ModelMetadata& meta)
++{
++  auto dsp = config->create(std::move(weights), meta.sample_rate);
++  if(meta.loudness.has_value())
++    dsp->SetLoudness(meta.loudness.value());
++  if(meta.input_level.has_value())
++    dsp->SetInputLevel(meta.input_level.value());
++  if(meta.output_level.has_value())
++    dsp->SetOutputLevel(meta.output_level.value());
++  return dsp;
++}
++
+ // =============================================================================
+ // Binary parsing into typed configs
+ // =============================================================================
+@@ -234,7 +245,7 @@ std::unique_ptr<nam::ModelConfig> load_wavenet(BinaryReader& r, const float*& we
+     size_t cdsp_wc = cdsp_weight_count;
+     auto cdsp_config = load_model(r, cdsp_weights, cdsp_wc, cdsp_meta);
+     std::vector<float> cdsp_weight_vec(weights, weights + cdsp_weight_count);
+-    wc->condition_dsp = nam::create_dsp(std::move(cdsp_config), std::move(cdsp_weight_vec), cdsp_meta);
++    wc->condition_dsp = construct_dsp(std::move(cdsp_config), std::move(cdsp_weight_vec), cdsp_meta);
+
+     // Advance past condition DSP weights
+     weights += cdsp_weight_count;
+@@ -327,19 +338,6 @@ std::unique_ptr<nam::ModelConfig> load_wavenet(BinaryReader& r, const float*& we
+   return wc;
+ }
+
+-// =============================================================================
+-// Static registration of binary parsers
+-// =============================================================================
+-
+-static nam::namb::BinaryConfigParserHelper _register_linear(ARCH_LINEAR, load_linear);
+-static nam::namb::BinaryConfigParserHelper _register_lstm(ARCH_LSTM, load_lstm);
+-static nam::namb::BinaryConfigParserHelper _register_convnet(ARCH_CONVNET, load_convnet);
+-static nam::namb::BinaryConfigParserHelper _register_wavenet(ARCH_WAVENET, load_wavenet);
+-
+-// =============================================================================
+-// Dispatch to architecture-specific loader via registry
+-// =============================================================================
+-
+ std::unique_ptr<nam::ModelConfig> load_model(BinaryReader& r, const float*& weights, size_t& weight_count,
+                                              const nam::ModelMetadata& meta)
+ {
+@@ -347,7 +345,21 @@ std::unique_ptr<nam::ModelConfig> load_model(BinaryReader& r, const float*& weig
+   r.read_u8(); // reserved
+   r.read_u16(); // config_size
+
+-  return BinaryConfigParserRegistry::instance().parse(arch, r, weights, weight_count, meta);
++  // Embedded targets do not need a dynamically allocated global registry.
++  // Direct dispatch also avoids pre-main unordered_map initialization.
++  switch (arch)
++  {
++    case ARCH_LINEAR:
++      return load_linear(r, weights, weight_count, meta);
++    case ARCH_CONVNET:
++      return load_convnet(r, weights, weight_count, meta);
++    case ARCH_LSTM:
++      return load_lstm(r, weights, weight_count, meta);
++    case ARCH_WAVENET:
++      return load_wavenet(r, weights, weight_count, meta);
++    default:
++      throw std::runtime_error("NAMB: unknown architecture ID " + std::to_string(arch));
++  }
+ }
+
+ } // anonymous namespace
+@@ -400,8 +412,11 @@ std::unique_ptr<nam::DSP> nam::get_dsp_namb(const uint8_t* data, size_t size)
+   ParsedMetadata pm = read_metadata_block(meta_reader);
+   ModelMetadata meta = to_model_metadata(pm);
+
+-  // Verify config version
+-  nam::verify_config_version(meta.version);
++  // NAMB stores numeric semver components. Validate those directly instead of
++  // pulling stringstreams/locales into the embedded runtime.
++  if(pm.version_major != 0 || pm.version_minor < 5 || pm.version_minor > 6
++     || (pm.version_minor == 6 && pm.version_patch > 0))
++    throw std::runtime_error("NAMB: unsupported model config version");
+
+   // Get weight data pointer
+   const float* weights = reinterpret_cast<const float*>(data + weights_offset);
+@@ -411,11 +426,11 @@ std::unique_ptr<nam::DSP> nam::get_dsp_namb(const uint8_t* data, size_t size)
+   size_t model_data_size = weights_offset - MODEL_BLOCK_OFFSET;
+   BinaryReader model_reader(data + MODEL_BLOCK_OFFSET, model_data_size);
+
+-  // Load model config, then construct via unified path
++  // Load and construct directly. JSON registry/version machinery is excluded
++  // from embedded NAMB-only builds.
+   auto config = load_model(model_reader, weights, weight_count, meta);
+   std::vector<float> weight_vec(weights, weights + weight_count);
+-  auto dsp = create_dsp(std::move(config), std::move(weight_vec), meta);
+-  return dsp;
++  return construct_dsp(std::move(config), std::move(weight_vec), meta);
+ }
+
+ std::unique_ptr<nam::DSP> nam::get_dsp_namb(const std::filesystem::path& filename)
