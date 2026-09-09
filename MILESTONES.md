@@ -30,7 +30,8 @@ profiling and headroom decision pending.
 
 ## v0.3 — Dream-style controls
 
-- Bass, middle and treble controls.
+- Bass, middle and treble controls. Done and hardware-validated, 2026-09-09.
+- Control layout: gain, reserved, output, bass, middle, treble. Done.
 - Speaker/voice selection.
 - Boost behavior and preset storage.
 - Reverb if the measured CPU budget permits it.

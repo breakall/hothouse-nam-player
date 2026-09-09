@@ -30,7 +30,11 @@ quiet notes were verified to ring out naturally.
 ## Controls
 
 - Knob 1: input gain; A1 is 0.25x–4x, A2-Lite is 0.25x–1.5x
-- Knob 6: output level
+- Knob 2: reserved
+- Knob 3: output level
+- Knob 4: bass, ±10 dB
+- Knob 5: middle, ±10 dB
+- Knob 6: treble, ±10 dB
 - Footswitch 1: processed/dry bypass
 - LED 1: effect active
 - LED 2: model fault or deadline overrun

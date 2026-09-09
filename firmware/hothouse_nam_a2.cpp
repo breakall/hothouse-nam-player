@@ -23,6 +23,8 @@ constexpr float kInputGainMinimum = 0.25f;
 constexpr float kInputGainMaximum = 1.5f;
 constexpr float kGateOpenThreshold = 0.001f;
 constexpr float kGateCloseThreshold = 0.0005f;
+constexpr float kBassLowpassCoefficient = 0.032195f;  // 250 Hz at 48 kHz
+constexpr float kTrebleLowpassCoefficient = 0.279675f; // 2.5 kHz at 48 kHz
 static_assert(kAudioBlockSize == 48, "A2-Lite runtime requires 48-sample blocks");
 static_assert(embedded_a2_model::kWeightCount == nam_a2_daisy::kA2WeightCount,
               "Embedded model does not match the A2-Lite runtime");
@@ -44,9 +46,14 @@ NAM_A2_STATE_DATA static nam_a2_daisy::A2Player model;
 
 SmoothedFloat input_gain_smoothed = {1.0f, 1.0f};
 SmoothedFloat output_smoothed = {0.8f, 0.8f};
+SmoothedFloat bass_gain_smoothed = {1.0f, 1.0f};
+SmoothedFloat mid_gain_smoothed = {1.0f, 1.0f};
+SmoothedFloat treble_gain_smoothed = {1.0f, 1.0f};
 float input_envelope = 0.0f;
 float input_gate_gain = 0.0f;
 bool input_gate_open = false;
+float bass_lowpass_state = 0.0f;
+float treble_lowpass_state = 0.0f;
 
 Led led_effect;
 Led led_status;
@@ -64,6 +71,28 @@ volatile uint8_t diagnostic_mode = 0;
 float InputGainFromKnob(float knob)
 {
   return kInputGainMinimum + knob * (kInputGainMaximum - kInputGainMinimum);
+}
+
+float EqGainFromKnob(float knob)
+{
+  // Give the physical noon position a small unity-gain deadband.
+  if(std::fabs(knob - 0.5f) < 0.025f)
+    return 1.0f;
+  const float decibels = (knob - 0.5f) * 20.0f;
+  return std::pow(10.0f, decibels / 20.0f);
+}
+
+float ProcessToneStack(float input)
+{
+  bass_lowpass_state += kBassLowpassCoefficient * (input - bass_lowpass_state);
+  treble_lowpass_state += kTrebleLowpassCoefficient * (input - treble_lowpass_state);
+
+  const float low = bass_lowpass_state;
+  const float mid = treble_lowpass_state - bass_lowpass_state;
+  const float high = input - treble_lowpass_state;
+  return low * bass_gain_smoothed.Tick()
+       + mid * mid_gain_smoothed.Tick()
+       + high * treble_gain_smoothed.Tick();
 }
 
 void CheckStartupRecovery()
@@ -104,6 +133,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 
   if(effect_enabled && model_loaded && size == kAudioBlockSize)
   {
+    const uint32_t cyc0 = DWT->CYCCNT;
     for(size_t i = 0; i < size; ++i)
     {
       const float input = in[0][i];
@@ -129,19 +159,11 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 #endif
     }
 
-    const uint32_t cyc0 = DWT->CYCCNT;
     model.process_block_48(mono_in, mono_out);
-    const uint32_t elapsed = DWT->CYCCNT - cyc0;
-    cb_process_cycles = elapsed;
-    if(elapsed > cb_max_cycles)
-      cb_max_cycles = elapsed;
-
-    if(elapsed >= kCycleBudget)
-      effect_enabled = false;
 
     for(size_t i = 0; i < size; ++i)
     {
-      float processed = mono_out[i] * output_smoothed.Tick();
+      float processed = ProcessToneStack(mono_out[i]) * output_smoothed.Tick();
 #if HOTHOUSE_A2_DIAGNOSTIC
       if(diagnostic_mode == 2)
         processed = 0.0f;
@@ -149,6 +171,14 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
       out[0][i] = processed;
       out[1][i] = processed;
     }
+
+    const uint32_t elapsed = DWT->CYCCNT - cyc0;
+    cb_process_cycles = elapsed;
+    if(elapsed > cb_max_cycles)
+      cb_max_cycles = elapsed;
+
+    if(elapsed >= kCycleBudget)
+      effect_enabled = false;
   }
   else
   {
@@ -198,7 +228,13 @@ int main()
 
   input_gain_smoothed.current = input_gain_smoothed.target
       = InputGainFromKnob(hw.GetKnobValue(Hothouse::KNOB_1));
-  output_smoothed.current = output_smoothed.target = hw.GetKnobValue(Hothouse::KNOB_6);
+  output_smoothed.current = output_smoothed.target = hw.GetKnobValue(Hothouse::KNOB_3);
+  bass_gain_smoothed.current = bass_gain_smoothed.target
+      = EqGainFromKnob(hw.GetKnobValue(Hothouse::KNOB_4));
+  mid_gain_smoothed.current = mid_gain_smoothed.target
+      = EqGainFromKnob(hw.GetKnobValue(Hothouse::KNOB_5));
+  treble_gain_smoothed.current = treble_gain_smoothed.target
+      = EqGainFromKnob(hw.GetKnobValue(Hothouse::KNOB_6));
 
   led_effect.Init(hw.seed.GetPin(Hothouse::LED_1), false);
   led_status.Init(hw.seed.GetPin(Hothouse::LED_2), false);
@@ -228,7 +264,10 @@ int main()
     const uint32_t now_ms = System::GetNow();
 
     input_gain_smoothed.target = InputGainFromKnob(hw.GetKnobValue(Hothouse::KNOB_1));
-    output_smoothed.target = hw.GetKnobValue(Hothouse::KNOB_6);
+    output_smoothed.target = hw.GetKnobValue(Hothouse::KNOB_3);
+    bass_gain_smoothed.target = EqGainFromKnob(hw.GetKnobValue(Hothouse::KNOB_4));
+    mid_gain_smoothed.target = EqGainFromKnob(hw.GetKnobValue(Hothouse::KNOB_5));
+    treble_gain_smoothed.target = EqGainFromKnob(hw.GetKnobValue(Hothouse::KNOB_6));
 
     if(hw.switches[Hothouse::FOOTSWITCH_1].RisingEdge() && model_loaded)
       effect_enabled = !effect_enabled;
