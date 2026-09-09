@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -18,6 +19,10 @@ namespace
 {
 constexpr size_t kAudioBlockSize = nam_a2_daisy::kBlockSize;
 constexpr uint32_t kCycleBudget = 480000;
+constexpr float kInputGainMinimum = 0.25f;
+constexpr float kInputGainMaximum = 1.5f;
+constexpr float kGateOpenThreshold = 0.001f;
+constexpr float kGateCloseThreshold = 0.0005f;
 static_assert(kAudioBlockSize == 48, "A2-Lite runtime requires 48-sample blocks");
 static_assert(embedded_a2_model::kWeightCount == nam_a2_daisy::kA2WeightCount,
               "Embedded model does not match the A2-Lite runtime");
@@ -39,6 +44,9 @@ NAM_A2_STATE_DATA static nam_a2_daisy::A2Player model;
 
 SmoothedFloat input_gain_smoothed = {1.0f, 1.0f};
 SmoothedFloat output_smoothed = {0.8f, 0.8f};
+float input_envelope = 0.0f;
+float input_gate_gain = 0.0f;
+bool input_gate_open = false;
 
 Led led_effect;
 Led led_status;
@@ -49,6 +57,14 @@ volatile bool effect_enabled = false;
 volatile bool model_loaded = false;
 volatile uint32_t cb_process_cycles = 0;
 volatile uint32_t cb_max_cycles = 0;
+#if HOTHOUSE_A2_DIAGNOSTIC
+volatile uint8_t diagnostic_mode = 0;
+#endif
+
+float InputGainFromKnob(float knob)
+{
+  return kInputGainMinimum + knob * (kInputGainMaximum - kInputGainMinimum);
+}
 
 void CheckStartupRecovery()
 {
@@ -70,7 +86,14 @@ void CheckStartupRecovery()
 void UpdateLedState()
 {
   led_effect.Set(effect_enabled ? 1.0f : 0.0f);
-  led_status.Set((!model_loaded || cb_max_cycles >= kCycleBudget) ? 1.0f : 0.0f);
+  bool status_on = !model_loaded || cb_max_cycles >= kCycleBudget;
+#if HOTHOUSE_A2_DIAGNOSTIC
+  if(!status_on && diagnostic_mode == 1)
+    status_on = true;
+  else if(!status_on && diagnostic_mode == 2)
+    status_on = ((System::GetNow() / 250U) & 1U) != 0U;
+#endif
+  led_status.Set(status_on ? 1.0f : 0.0f);
   led_effect.Update();
   led_status.Update();
 }
@@ -82,7 +105,29 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
   if(effect_enabled && model_loaded && size == kAudioBlockSize)
   {
     for(size_t i = 0; i < size; ++i)
-      mono_in[i] = in[0][i] * input_gain_smoothed.Tick();
+    {
+      const float input = in[0][i];
+      const float magnitude = std::fabs(input);
+      const float envelope_coefficient = magnitude > input_envelope ? 0.05f : 0.0002f;
+      fonepole(input_envelope, magnitude, envelope_coefficient);
+
+      if(input_gate_open)
+      {
+        if(input_envelope < kGateCloseThreshold)
+          input_gate_open = false;
+      }
+      else if(input_envelope > kGateOpenThreshold)
+        input_gate_open = true;
+
+      const float gate_target = input_gate_open ? 1.0f : 0.0f;
+      fonepole(input_gate_gain, gate_target, input_gate_open ? 0.05f : 0.001f);
+      const float gained_input = input * input_gain_smoothed.Tick() * input_gate_gain;
+#if HOTHOUSE_A2_DIAGNOSTIC
+      mono_in[i] = diagnostic_mode == 0 ? gained_input : 0.0f;
+#else
+      mono_in[i] = gained_input;
+#endif
+    }
 
     const uint32_t cyc0 = DWT->CYCCNT;
     model.process_block_48(mono_in, mono_out);
@@ -96,7 +141,11 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 
     for(size_t i = 0; i < size; ++i)
     {
-      const float processed = mono_out[i] * output_smoothed.Tick();
+      float processed = mono_out[i] * output_smoothed.Tick();
+#if HOTHOUSE_A2_DIAGNOSTIC
+      if(diagnostic_mode == 2)
+        processed = 0.0f;
+#endif
       out[0][i] = processed;
       out[1][i] = processed;
     }
@@ -148,7 +197,7 @@ int main()
   hw.ProcessAllControls();
 
   input_gain_smoothed.current = input_gain_smoothed.target
-      = 0.25f + hw.GetKnobValue(Hothouse::KNOB_1) * 3.75f;
+      = InputGainFromKnob(hw.GetKnobValue(Hothouse::KNOB_1));
   output_smoothed.current = output_smoothed.target = hw.GetKnobValue(Hothouse::KNOB_6);
 
   led_effect.Init(hw.seed.GetPin(Hothouse::LED_1), false);
@@ -178,11 +227,16 @@ int main()
     hw.ProcessAllControls();
     const uint32_t now_ms = System::GetNow();
 
-    input_gain_smoothed.target = 0.25f + hw.GetKnobValue(Hothouse::KNOB_1) * 3.75f;
+    input_gain_smoothed.target = InputGainFromKnob(hw.GetKnobValue(Hothouse::KNOB_1));
     output_smoothed.target = hw.GetKnobValue(Hothouse::KNOB_6);
 
     if(hw.switches[Hothouse::FOOTSWITCH_1].RisingEdge() && model_loaded)
       effect_enabled = !effect_enabled;
+
+#if HOTHOUSE_A2_DIAGNOSTIC
+    if(hw.switches[Hothouse::FOOTSWITCH_2].RisingEdge())
+      diagnostic_mode = static_cast<uint8_t>((diagnostic_mode + 1U) % 3U);
+#endif
 
     UpdateLedState();
     hw.CheckResetToBootloader();

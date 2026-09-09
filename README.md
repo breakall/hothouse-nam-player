@@ -21,9 +21,15 @@ Core test model plus a 1024-tap IR was validated earlier, but ordinary A1 Nano
 Tanh captures exceeded the real-time deadline. Use ReLU captures only on this
 target until measured otherwise.
 
+On 2026-09-09, the A2-Lite backend was hardware-validated with a Fender
+Princeton full-rig capture. Model processing, bypass, LEDs and controls were
+stable with no deadline fault. The A2 signal path includes a smooth input noise
+gate to prevent the Hothouse input-stage noise floor from exciting the model;
+quiet notes were verified to ring out naturally.
+
 ## Controls
 
-- Knob 1: input gain, 0.25x–4x
+- Knob 1: input gain; A1 is 0.25x–4x, A2-Lite is 0.25x–1.5x
 - Knob 6: output level
 - Footswitch 1: processed/dry bypass
 - LED 1: effect active
@@ -85,6 +91,13 @@ it is the supported 3-channel A2-Lite architecture (1,871 weights, LeakyReLU,
 cannot meet the Daisy Seed's real-time budget. The current A2 MVP expects a
 capture with its cabinet baked in; separate IR processing can be evaluated
 after hardware cycle measurements.
+
+An optional diagnostic build uses footswitch 2 to isolate input and output
+noise while keeping the A2 workload active:
+
+```sh
+make a2 A2_DIAGNOSTIC=1 MODEL="/absolute/path/to/capture.nam"
+```
 
 Build outputs:
 

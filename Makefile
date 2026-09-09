@@ -1,6 +1,7 @@
 MODEL ?=
 IR ?=
 USE_IR ?= 0
+A2_DIAGNOSTIC ?= 0
 
 A2_RUNTIME = external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam/nam_a2_runtime.h
 
@@ -22,7 +23,7 @@ a2: require-model
 	@test -f "$(A2_RUNTIME)" || { echo "A2 runtime missing; run: make setup-a2" >&2; exit 2; }
 	python3 tools/embed_a2_model.py "$(MODEL)" -o firmware/embedded_a2_model.h
 	$(MAKE) -C firmware -f Makefile.a2 BUILD_DIR=build/a2 clean
-	$(MAKE) -C firmware -f Makefile.a2 BUILD_DIR=build/a2
+	$(MAKE) -C firmware -f Makefile.a2 BUILD_DIR=build/a2 DIAGNOSTIC=$(A2_DIAGNOSTIC)
 
 clean-a1:
 	$(MAKE) -C firmware BUILD_DIR=build/a1 clean

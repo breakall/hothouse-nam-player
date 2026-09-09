@@ -6,6 +6,7 @@ CPP_STANDARD = -std=gnu++17
 GCC_PATH ?= ../external/arm-toolchain-pkg/Payload/bin
 LDFLAGS = -T$(abspath nam_a2_sections.lds) -u _printf_float
 MODEL ?=
+DIAGNOSTIC ?= 0
 EMBED_SCRIPT = ../tools/embed_a2_model.py
 
 CPP_SOURCES = \
@@ -17,6 +18,7 @@ C_INCLUDES = \
   -I../external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam
 
 C_DEFS = \
+  -DHOTHOUSE_A2_DIAGNOSTIC=$(DIAGNOSTIC) \
   -D__ARM_ARCH_7EM__
 
 LIBDAISY_DIR = ../HothouseExamples/libDaisy
