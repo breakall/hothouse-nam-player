@@ -1,6 +1,7 @@
 TARGET = hothouse_nam_a2
 
-APP_TYPE = BOOT_QSPI
+APP_TYPE = BOOT_SRAM
+USE_DAISYSP_LGPL = 1
 OPT = -Ofast
 CPP_STANDARD = -std=gnu++17
 GCC_PATH ?= ../external/arm-toolchain-pkg/Payload/bin

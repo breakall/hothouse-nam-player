@@ -29,16 +29,31 @@ quiet notes were verified to ring out naturally.
 
 ## Controls
 
-- Knob 1: input gain; A1 is 0.25x–4x, A2-Lite is 0.25x–1.5x
-- Knob 2: reserved
+- Knob 1: input gain, 0.25x–4x; A2-Lite has a logarithmic curve with unity at noon
+- Knob 2: reverb wet/dry mix
 - Knob 3: output level
 - Knob 4: bass, ±10 dB
 - Knob 5: middle, ±10 dB
 - Knob 6: treble, ±10 dB
-- Footswitch 1: processed/dry bypass
+- Toggle 1: room / off / hall (up / middle / down)
+- Toggles 2 and 3: reserved; their positions are included in the preset
+- Footswitch 1: overall processed/dry bypass
+- Footswitch 2, short press: engage the saved preset or return to the live panel
+- Footswitch 2, hold 1.5 seconds: save all six physical knob positions and all
+  three toggle positions, then engage the preset
 - LED 1: effect active
-- LED 2: model fault or deadline overrun
+- LED 2: preset engaged; it flashes briefly when saving and fast-blinks for a
+  model fault or deadline overrun
 - Hold both footswitches: persistent Daisy DFU recovery
+
+The preset is stored in a dedicated QSPI flash sector and survives power loss.
+When first engaged, the saved values control the sound. Moving an individual
+knob or toggle wakes up only that control for temporary editing; the remaining
+controls continue using their saved values. These edits do not alter the saved
+preset. Knob edits are relative to the recalled value, so touching a physically
+mismatched knob does not cause an abrupt parameter jump. Disengaging and
+re-engaging recalls the saved values again. Holding
+Footswitch 2 for 1.5 seconds is the explicit action that overwrites the preset.
 
 ## Set up
 

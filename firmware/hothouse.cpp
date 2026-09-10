@@ -207,9 +207,10 @@ void Hothouse::CheckResetToBootloader() {
       }
 
 #ifdef BOOT_APP
-      // QSPI/SRAM applications must return to the Daisy bootloader. Keep its
-      // DFU window open so an enclosed pedal never requires access to BOOT.
-      System::ResetToBootloader(System::BootloaderMode::DAISY_INFINITE_TIMEOUT);
+      // QSPI/SRAM applications return through the Daisy bootloader. Use its
+      // normal timeout so a completed DFU transfer launches the application
+      // without requiring a full power cycle.
+      System::ResetToBootloader(System::BootloaderMode::DAISY);
 #else
       System::ResetToBootloader();
 #endif
