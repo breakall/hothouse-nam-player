@@ -55,8 +55,15 @@ def load_wav(path: Path, max_taps: int) -> tuple[list[float], int]:
     return samples, sample_rate
 
 
+def cpp_float(value: float) -> str:
+    text = f"{value:.9g}"
+    if "." not in text and "e" not in text.lower():
+        text += ".0"
+    return text + "f"
+
+
 def write_header(path: Path, name: str, samples: list[float], sample_rate: int) -> None:
-    values = ",\n    ".join(f"{value:.9g}f" for value in samples)
+    values = ",\n    ".join(cpp_float(value) for value in samples)
     text = f"""#pragma once
 
 #include <cstddef>

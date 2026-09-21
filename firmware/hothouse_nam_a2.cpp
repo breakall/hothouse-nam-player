@@ -8,7 +8,16 @@
 #include "daisysp.h"
 #include "daisysp-lgpl.h"
 #include "embedded_a2_model.h"
+#include "capture_loader.h"
+#if HOTHOUSE_USE_IR
+#include "embedded_ir_bank.h"
+#endif
 #include "hothouse.h"
+#if HOTHOUSE_A2_SIZE_BUILD
+// Keep the control/USB firmware compact enough for the Seed's 128 KB internal
+// flash, while retaining speed optimization on the A2 audio kernels.
+#define NAM_A2_NOINLINE __attribute__((noinline, optimize("O2")))
+#endif
 #include "nam_a2_runtime.h"
 
 using clevelandmusicco::Hothouse;
@@ -18,12 +27,28 @@ using daisy::PersistentStorage;
 using daisy::SaiHandle;
 using daisy::System;
 using daisysp::ReverbSc;
+#if HOTHOUSE_USE_IR
+using daisysp::FIR;
+#endif
 using daisysp::fonepole;
+using hothouse_nam::ByteRing;
+using hothouse_nam::CaptureFormat;
+using hothouse_nam::CaptureInfo;
+using hothouse_nam::CaptureStore;
+using hothouse_nam::Command;
+using hothouse_nam::CommandType;
 
 namespace
 {
 constexpr size_t kAudioBlockSize = nam_a2_daisy::kBlockSize;
 constexpr uint32_t kCycleBudget = 480000;
+#if HOTHOUSE_USE_IR
+constexpr size_t kMaxIrLength = 1024;
+static_assert(embedded_ir_bank::kCount > 0 && embedded_ir_bank::kCount <= 2,
+              "IR bank must contain one or two entries");
+static_assert(embedded_ir_bank::kSampleRate == 48000,
+              "Cabinet IRs must be 48 kHz");
+#endif
 constexpr float kInputGainMinimum = 0.25f;
 constexpr float kInputGainOctaves = 4.0f;
 constexpr float kGateOpenThreshold = 0.001f;
@@ -80,8 +105,61 @@ struct PresetSettings
 Hothouse hw;
 NAM_A2_STATE_DATA static nam_a2_daisy::A2Player model;
 ReverbSc DSY_SDRAM_BSS reverb;
+#if HOTHOUSE_USE_IR
+FIR<kMaxIrLength, kAudioBlockSize> cabinet_irs[2];
+#endif
 PersistentStorage<PresetSettings> preset_storage(hw.seed.qspi);
 PresetSettings saved_preset = {};
+
+class DaisyFlashBackend
+{
+ public:
+  explicit DaisyFlashBackend(daisy::QSPIHandle& qspi) : qspi_(qspi) {}
+
+  const uint8_t* Data(uint32_t offset) const
+  {
+    return offset < 0x00800000U
+        ? static_cast<const uint8_t*>(qspi_.GetData(offset)) : nullptr;
+  }
+
+  bool Read(uint32_t offset, uint8_t* output, size_t length) const
+  {
+    const uint8_t* source = Data(offset);
+    if(source == nullptr || output == nullptr || length > 0x00800000U - offset)
+      return false;
+    std::memcpy(output, source, length);
+    return true;
+  }
+
+  bool Write(uint32_t offset, const uint8_t* input, size_t length)
+  {
+    return System::GetProgramMemoryRegion() != System::MemoryRegion::QSPI
+        && input != nullptr && offset <= 0x00800000U
+        && length <= 0x00800000U - offset
+        && qspi_.Write(offset, static_cast<uint32_t>(length),
+                       const_cast<uint8_t*>(input)) == daisy::QSPIHandle::OK;
+  }
+
+  bool Erase(uint32_t offset, uint32_t length)
+  {
+    return System::GetProgramMemoryRegion() != System::MemoryRegion::QSPI
+        && length != 0 && offset <= 0x00800000U
+        && length <= 0x00800000U - offset
+        && qspi_.Erase(offset, offset + length) == daisy::QSPIHandle::OK;
+  }
+
+ private:
+  daisy::QSPIHandle& qspi_;
+};
+
+DaisyFlashBackend capture_flash(hw.seed.qspi);
+CaptureStore<DaisyFlashBackend> capture_store(capture_flash);
+ByteRing<1024> capture_usb_rx;
+alignas(32) float capture_weights[nam_a2_daisy::kA2WeightCount] = {};
+char capture_line[320] = {};
+size_t capture_line_length = 0;
+char capture_reply[192] = {};
+size_t capture_reply_length = 0;
 
 SmoothedFloat input_gain_smoothed = {1.0f, 1.0f};
 SmoothedFloat output_smoothed = {0.8f, 0.8f};
@@ -99,6 +177,11 @@ Led led_effect;
 Led led_status;
 float mono_in[kAudioBlockSize];
 float mono_out[kAudioBlockSize];
+#if HOTHOUSE_USE_IR
+float cabinet_out[kAudioBlockSize];
+constexpr uint8_t kIrOff = 0xff;
+volatile uint8_t active_ir_index = kIrOff;
+#endif
 char usb_log_buffers[2][192] = {};
 uint8_t usb_log_active_buffer = 1;
 
@@ -126,6 +209,153 @@ volatile uint8_t diagnostic_mode = 0;
 void AudioCallback(AudioHandle::InputBuffer in,
                    AudioHandle::OutputBuffer out,
                    size_t size);
+
+void CaptureUsbReceive(uint8_t* bytes, uint32_t* length)
+{
+  if(length != nullptr)
+    capture_usb_rx.PushFromInterrupt(bytes, *length);
+}
+
+void QueueCaptureReply(const char* format, ...)
+{
+  va_list args;
+  va_start(args, format);
+  const int result = std::vsnprintf(capture_reply, sizeof(capture_reply) - 2,
+                                    format, args);
+  va_end(args);
+  if(result < 0)
+    return;
+  capture_reply_length = static_cast<size_t>(result);
+  if(capture_reply_length > sizeof(capture_reply) - 2)
+    capture_reply_length = sizeof(capture_reply) - 2;
+  capture_reply[capture_reply_length++] = '\r';
+  capture_reply[capture_reply_length++] = '\n';
+}
+
+void FlushCaptureReply()
+{
+  if(capture_reply_length == 0)
+    return;
+  if(hw.seed.usb_handle.TransmitInternal(
+       reinterpret_cast<uint8_t*>(capture_reply), capture_reply_length)
+     == daisy::UsbHandle::Result::OK)
+    capture_reply_length = 0;
+}
+
+bool LoadInstalledCapture(const CaptureInfo& info, bool audio_running)
+{
+  if(info.format != CaptureFormat::A2WeightsF32
+     || info.size != sizeof(capture_weights)
+     || !capture_store.ReadPayload(
+          info, reinterpret_cast<uint8_t*>(capture_weights),
+          sizeof(capture_weights)))
+    return false;
+  if(audio_running)
+    hw.StopAudio();
+  const bool loaded = model.load_weights(capture_weights,
+                                         nam_a2_daisy::kA2WeightCount);
+  model_loaded = loaded;
+  effect_enabled = loaded;
+  cb_max_cycles = 0;
+  if(audio_running)
+    hw.StartAudio(AudioCallback);
+  return loaded;
+}
+
+void HandleCaptureCommand(char* line)
+{
+  Command command;
+  if(!hothouse_nam::ParseCommand(line, command))
+  {
+    QueueCaptureReply("HNAM ERR bad_command");
+    return;
+  }
+  if(command.type == CommandType::Info)
+  {
+    CaptureInfo info;
+    if(capture_store.ReadInfo(info)
+       && info.format == CaptureFormat::A2WeightsF32)
+      QueueCaptureReply("HNAM OK INFO a2_lite installed %lu %08lx",
+                        static_cast<unsigned long>(info.size),
+                        static_cast<unsigned long>(info.crc32));
+    else
+      QueueCaptureReply("HNAM OK INFO a2_lite factory 0 00000000");
+  }
+  else if(command.type == CommandType::Begin)
+  {
+    if(command.format != CaptureFormat::A2WeightsF32
+       || command.size != sizeof(capture_weights))
+      QueueCaptureReply("HNAM ERR incompatible_capture");
+    else if(!capture_store.Begin(command.name, command.format, command.size,
+                                 command.crc32))
+      QueueCaptureReply("HNAM ERR begin_failed");
+    else
+      QueueCaptureReply("HNAM OK BEGIN 0");
+  }
+  else if(command.type == CommandType::Data)
+  {
+    if(!capture_store.WriteChunk(command.offset, command.data,
+                                 command.data_length))
+      QueueCaptureReply("HNAM ERR data_failed");
+    else
+      QueueCaptureReply("HNAM OK DATA %lu",
+                        static_cast<unsigned long>(capture_store.UploadOffset()));
+  }
+  else if(command.type == CommandType::Commit)
+  {
+    CaptureInfo info;
+    if(!capture_store.Commit(info))
+      QueueCaptureReply("HNAM ERR commit_failed");
+    else if(!LoadInstalledCapture(info, true))
+    {
+      hw.StopAudio();
+      model_loaded = model.load_weights(embedded_a2_model::kWeights,
+                                        embedded_a2_model::kWeightCount);
+      effect_enabled = model_loaded;
+      hw.StartAudio(AudioCallback);
+      QueueCaptureReply("HNAM ERR activate_failed");
+    }
+    else
+      QueueCaptureReply("HNAM OK COMMIT %08lx",
+                        static_cast<unsigned long>(info.crc32));
+  }
+  else if(command.type == CommandType::Cancel)
+  {
+    capture_store.Cancel();
+    QueueCaptureReply("HNAM OK CANCEL");
+  }
+}
+
+void ProcessCaptureUsb()
+{
+  FlushCaptureReply();
+  if(capture_reply_length != 0)
+    return;
+  char byte = 0;
+  while(capture_usb_rx.Pop(byte))
+  {
+    if(byte == '\r')
+      continue;
+    if(byte == '\n')
+    {
+      if(capture_line_length != 0)
+      {
+        capture_line[capture_line_length] = '\0';
+        HandleCaptureCommand(capture_line);
+        capture_line_length = 0;
+        return;
+      }
+      continue;
+    }
+    if(capture_line_length + 1U >= sizeof(capture_line))
+    {
+      capture_line_length = 0;
+      QueueCaptureReply("HNAM ERR line_too_long");
+      return;
+    }
+    capture_line[capture_line_length++] = byte;
+  }
+}
 
 void UsbLog(const char* format, ...)
 {
@@ -297,6 +527,33 @@ float ProcessToneStack(float input)
        + high * treble_gain_smoothed.Tick();
 }
 
+#if HOTHOUSE_USE_IR
+uint8_t IrIndexFromPanel()
+{
+  const Hothouse::ToggleswitchPosition position
+      = ActiveToggle(Hothouse::TOGGLESWITCH_2);
+  if(position == Hothouse::TOGGLESWITCH_MIDDLE
+     || position == Hothouse::TOGGLESWITCH_UNKNOWN)
+    return kIrOff;
+  if(position == Hothouse::TOGGLESWITCH_DOWN
+     && embedded_ir_bank::kCount > 1)
+    return 1;
+  return 0;
+}
+
+void UpdateIrSelection()
+{
+  const uint8_t requested = IrIndexFromPanel();
+  if(requested == active_ir_index)
+    return;
+  if(requested != kIrOff)
+    cabinet_irs[requested].Reset();
+  active_ir_index = requested;
+  UsbLog("cabinet IR: %s", requested == kIrOff
+      ? "off" : embedded_ir_bank::kEntries[requested].name);
+}
+#endif
+
 void UpdateReverbControls()
 {
   const Hothouse::ToggleswitchPosition position
@@ -441,9 +698,22 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 
     model.process_block_48(mono_in, mono_out);
 
+#if HOTHOUSE_USE_IR
+    const uint8_t ir_index = active_ir_index;
+    if(ir_index == kIrOff)
+      for(size_t i = 0; i < size; ++i)
+        cabinet_out[i] = mono_out[i];
+    else
+      cabinet_irs[ir_index].ProcessBlock(mono_out, cabinet_out, size);
+#endif
+
     for(size_t i = 0; i < size; ++i)
     {
+#if HOTHOUSE_USE_IR
+      const float dry = ProcessToneStack(cabinet_out[i]);
+#else
       const float dry = ProcessToneStack(mono_out[i]);
+#endif
       float wet_left = 0.0f;
       float wet_right = 0.0f;
       if(reverb_ready)
@@ -522,6 +792,8 @@ int main()
   *FPDSCR |= (1U << 24) | (1U << 25);
 
   hw.seed.usb_handle.Init(daisy::UsbHandle::FS_INTERNAL);
+  hw.seed.usb_handle.SetReceiveCallback(CaptureUsbReceive,
+                                        daisy::UsbHandle::FS_INTERNAL);
   UsbLog("HothouseNAM A2-Lite boot");
 
   hw.StartAdc();
@@ -557,24 +829,40 @@ int main()
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
   reverb_ready = reverb.Init(hw.AudioSampleRate()) == 0;
+#if HOTHOUSE_USE_IR
+  for(size_t i = 0; i < embedded_ir_bank::kCount; ++i)
+  {
+    const embedded_ir_bank::Entry& entry = embedded_ir_bank::kEntries[i];
+    cabinet_irs[i].Init(entry.data, entry.length, true);
+  }
+  active_ir_index = IrIndexFromPanel();
+  UsbLog("cabinet IR: %s", active_ir_index == kIrOff
+      ? "off" : embedded_ir_bank::kEntries[active_ir_index].name);
+#endif
   UpdateReverbControls();
   reverb_mix_smoothed.current = reverb_mix_smoothed.target;
 
   // Start dry so model initialization can never block audio or recovery.
   hw.StartAudio(AudioCallback);
 
-  model_loaded = model.load_weights(embedded_a2_model::kWeights,
-                                    embedded_a2_model::kWeightCount);
-  effect_enabled = model_loaded;
-  UsbLog("embedded A2-Lite model: %s (%s, submodel=%d)",
+  CaptureInfo installed_capture;
+  const bool installed_loaded = capture_store.ReadInfo(installed_capture)
+      && LoadInstalledCapture(installed_capture, false);
+  if(!installed_loaded)
+  {
+    model_loaded = model.load_weights(embedded_a2_model::kWeights,
+                                      embedded_a2_model::kWeightCount);
+    effect_enabled = model_loaded;
+  }
+  UsbLog("A2-Lite model: %s (%s)",
          model_loaded ? "ok" : "failed",
-         embedded_a2_model::kName,
-         embedded_a2_model::kSourceSubmodel);
+         installed_loaded ? installed_capture.name : embedded_a2_model::kName);
   BenchmarkModel();
 
   uint32_t last_log_ms = System::GetNow();
   while(true)
   {
+    ProcessCaptureUsb();
     hw.ProcessAllControls();
     const uint32_t now_ms = System::GetNow();
 
@@ -586,6 +874,9 @@ int main()
     mid_gain_smoothed.target = EqGainFromKnob(ActiveKnob(Hothouse::KNOB_5));
     treble_gain_smoothed.target = EqGainFromKnob(ActiveKnob(Hothouse::KNOB_6));
     UpdateReverbControls();
+#if HOTHOUSE_USE_IR
+    UpdateIrSelection();
+#endif
 
     if(hw.switches[Hothouse::FOOTSWITCH_1].RisingEdge() && model_loaded)
       effect_enabled = !effect_enabled;

@@ -5,9 +5,11 @@ USE_DAISYSP_LGPL = 1
 OPT = -Ofast
 CPP_STANDARD = -std=gnu++17
 GCC_PATH ?= ../external/arm-toolchain-pkg/Payload/bin
-LDFLAGS = -T$(abspath nam_a2_sections.lds) -u _printf_float
+LDFLAGS = -T"$(abspath nam_a2_sections.lds)"
 MODEL ?=
 DIAGNOSTIC ?= 0
+USE_IR ?= 0
+SIZE_BUILD ?= 0
 EMBED_SCRIPT = ../tools/embed_a2_model.py
 
 CPP_SOURCES = \
@@ -20,6 +22,8 @@ C_INCLUDES = \
 
 C_DEFS = \
   -DHOTHOUSE_A2_DIAGNOSTIC=$(DIAGNOSTIC) \
+  -DHOTHOUSE_USE_IR=$(USE_IR) \
+  -DHOTHOUSE_A2_SIZE_BUILD=$(SIZE_BUILD) \
   -D__ARM_ARCH_7EM__
 
 LIBDAISY_DIR = ../HothouseExamples/libDaisy

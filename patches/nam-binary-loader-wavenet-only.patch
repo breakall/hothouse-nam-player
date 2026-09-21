@@ -1,0 +1,48 @@
+diff --git a/namb/get_dsp_namb.cpp b/namb/get_dsp_namb.cpp
+--- a/namb/get_dsp_namb.cpp
++++ b/namb/get_dsp_namb.cpp
+@@ -8,9 +8,13 @@
+ #include "get_dsp_namb.h"
+ 
+ #include <NAM/activations.h>
++#ifndef NAM_NAMB_WAVENET_ONLY
+ #include <NAM/convnet.h>
++#endif
+ #include <NAM/dsp.h>
++#ifndef NAM_NAMB_WAVENET_ONLY
+ #include <NAM/lstm.h>
++#endif
+ #include <NAM/model_config.h>
+ #include <NAM/wavenet.h>
+ #include "namb_format.h"
+@@ -164,6 +168,7 @@ std::unique_ptr<nam::ModelConfig> load_model(BinaryReader& r, const float*& wei
+ 
+ // --- Linear ---
+ 
++#ifndef NAM_NAMB_WAVENET_ONLY
+ std::unique_ptr<nam::ModelConfig> load_linear(BinaryReader& r, const float*& /*weights*/, size_t& /*weight_count*/,
+                                               const nam::ModelMetadata&)
+ {
+@@ -216,6 +221,7 @@ std::unique_ptr<nam::ModelConfig> load_convnet(BinaryReader& r, const float*& /
+ 
+   return cfg;
+ }
++#endif
+ 
+ // --- WaveNet ---
+ 
+@@ -350,12 +356,14 @@ std::unique_ptr<nam::ModelConfig> load_model(BinaryReader& r, const float*& wei
+   // Direct dispatch also avoids pre-main unordered_map initialization.
+   switch (arch)
+   {
++#ifndef NAM_NAMB_WAVENET_ONLY
+     case ARCH_LINEAR:
+       return load_linear(r, weights, weight_count, meta);
+     case ARCH_CONVNET:
+       return load_convnet(r, weights, weight_count, meta);
+     case ARCH_LSTM:
+       return load_lstm(r, weights, weight_count, meta);
++#endif
+     case ARCH_WAVENET:
+       return load_wavenet(r, weights, weight_count, meta);
+     default:

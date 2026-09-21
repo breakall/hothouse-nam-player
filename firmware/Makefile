@@ -1,7 +1,8 @@
 # Project Name
 TARGET = hothouse_nam
 
-APP_TYPE = BOOT_QSPI
+APP_TYPE = BOOT_SRAM
+USE_DAISYSP_LGPL = 1
 OPT = -O3
 CPP_STANDARD = -std=gnu++17
 GCC_PATH ?= ../external/arm-toolchain-pkg/Payload/bin
@@ -10,7 +11,6 @@ MODEL ?=
 IR ?=
 USE_IR ?= 0
 EMBED_SCRIPT = ../tools/embed_model.py
-IR_EMBED_SCRIPT = ../tools/embed_ir.py
 
 CPP_SOURCES = \
   hothouse_nam.cpp \
@@ -18,9 +18,7 @@ CPP_SOURCES = \
   ../nam-pedal/nam-binary-loader/namb/get_dsp_namb.cpp \
   ../nam-pedal/NeuralAmpModelerCore/NAM/activations.cpp \
   ../nam-pedal/NeuralAmpModelerCore/NAM/conv1d.cpp \
-  ../nam-pedal/NeuralAmpModelerCore/NAM/convnet.cpp \
   ../nam-pedal/NeuralAmpModelerCore/NAM/dsp.cpp \
-  ../nam-pedal/NeuralAmpModelerCore/NAM/lstm.cpp \
   ../nam-pedal/NeuralAmpModelerCore/NAM/ring_buffer.cpp \
   ../nam-pedal/NeuralAmpModelerCore/NAM/util.cpp \
   ../nam-pedal/NeuralAmpModelerCore/NAM/wavenet.cpp
@@ -36,6 +34,7 @@ C_DEFS = \
   -DNAM_SAMPLE_FLOAT \
   -DNAM_USE_INLINE_GEMM \
   -DNAM_DISABLE_JSON_REGISTRY \
+  -DNAM_NAMB_WAVENET_ONLY \
   -DHOTHOUSE_USE_IR=$(USE_IR) \
   -D__ARM_ARCH_7EM__
 
@@ -51,6 +50,3 @@ CPPFLAGS += -fexceptions -ffast-math -funroll-loops -ftree-vectorize -fmove-loop
 
 embed-model:
 	python3 $(EMBED_SCRIPT) "$(MODEL)" -o embedded_model.h
-
-embed-ir:
-	python3 $(IR_EMBED_SCRIPT) "$(IR)" -o embedded_ir.h

@@ -24,3 +24,6 @@ apply_once \
 apply_once \
   "$project_root/nam-pedal/nam-binary-loader" \
   "$project_root/patches/nam-binary-loader-embedded.patch"
+apply_once \
+  "$project_root/nam-pedal/nam-binary-loader" \
+  "$project_root/patches/nam-binary-loader-wavenet-only.patch"

@@ -3,9 +3,12 @@ build/
 firmware/build/
 firmware/embedded_model.h
 firmware/embedded_ir.h
+firmware/embedded_ir_bank.h
 firmware/embedded_a2_model.h
 external/
 __pycache__/
+output/
+tmp/
 *.nam
 *.namb
 *.wav
