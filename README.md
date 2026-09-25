@@ -1,7 +1,7 @@
 # Hothouse NAM Player
 
 Open-source NAM firmware for the Cleveland Music Co. Hothouse / Daisy Seed.
-The project has one firmware host with separate build-time adapters for the
+The project has one firmware image with runtime adapters for the
 hardware-validated A1 Nano-ReLU and A2-Lite engines. Both run at 48 kHz and
 therefore share the signal chain, controls, presets, capture slots, USB
 protocol, deadline protection, and enclosure-safe firmware recovery.
@@ -35,9 +35,9 @@ model; quiet notes were verified to ring out naturally.
 ## Architecture
 
 `firmware/hothouse_nam_host.cpp` owns all product behavior. It talks only to
-the small `firmware/nam_engine.h` contract: identify the backend and payload,
-load or clear a model, and process one 48-sample block. A build links exactly
-one adapter:
+the small `firmware/nam_engine.h` contract: identify a tagged payload, load or
+clear its evaluator, and process one 48-sample block. The firmware links both
+adapters and dispatches to the one selected by the active slot:
 
 - `nam_engine_a1.cpp` parses a variable-size NAMB payload, constructs the NAM
   Core WaveNet object, resets/prewarms its state once, and invokes its block
@@ -46,10 +46,11 @@ one adapter:
   into the fixed A2-Lite runtime and invokes its specialized 48-sample kernel.
 
 Those loading and evaluator details are inherent to the two runtime formats;
-they no longer create parallel implementations of the pedal. The USB installer
-follows the same boundary: it discovers the running backend, asks that
-backend's adapter to validate and prepare the download, then uses one transfer
-and activation flow.
+they do not create parallel implementations of the pedal. A shared 64 KiB
+staging buffer is reused for either format, and only one model is active at a
+time. The USB installer follows the same boundary: it determines whether a
+download contains a supported A1 or A2-Lite model, prepares the tagged payload,
+then uses one transfer and activation flow.
 
 ## Controls
 
@@ -90,10 +91,17 @@ cd hothouse-nam-player
 ./tools/setup_dependencies.sh
 ```
 
-## Choose a backend at build time
+## Build the firmware
 
-The backend is compiled into the firmware; only one is present in a binary.
-Both variants keep the same MVP controls and safety behavior.
+Set up the pinned A2 runtime once, then build the one combined image:
+
+```sh
+make setup-a2
+make firmware USE_IR=0
+```
+
+The output is `firmware/build/combined/hothouse_nam.bin`. The legacy `make a1`
+and `make a2` targets are aliases for this same combined build.
 
 ## Install captures over USB (no DFU)
 
@@ -115,8 +123,8 @@ make install-capture CAPTURE="/absolute/path/to/capture.nam" SLOT=A
 make list-captures
 ```
 
-The installer finds the USB serial device, asks the pedal which backend it is
-running, validates and prepares the capture, transfers it with per-chunk
+The installer finds the USB serial device, confirms the combined firmware,
+validates and prepares the capture, transfers it with per-chunk
 acknowledgements, verifies a CRC-32 checksum in firmware, writes it to a
 dedicated QSPI slot, and activates it immediately when that slot is selected.
 Captures survive power cycles. Toggle 3 selects slot A, B, or C; only that
@@ -128,10 +136,10 @@ ms in silence for the switch position to settle. Only the final slot is loaded;
 its output fades in over 20 ms. This avoids both model-reset discontinuities
 and an unnecessary middle-slot load when moving between the outer positions.
 
-- A2-Lite firmware accepts compatible A2 `.nam` captures, searches all models
+- Compatible A2 `.nam` captures are searched across all models
   in a slimmable download, and extracts the supported 1,871-weight submodel
   before transfer.
-- A1 firmware accepts A1 Nano-ReLU `.nam` or `.namb` captures. For `.nam`, the
+- Compatible A1 Nano-ReLU `.nam` or `.namb` captures are accepted. For `.nam`, the
   installer automatically runs the locally built `nam2namb` converter. The A1
   runtime payload limit is 64 KiB; real-time DSP compatibility remains limited
   to the Nano-ReLU class validated on this hardware.
@@ -188,11 +196,11 @@ cmake -S nam-pedal/nam-binary-loader -B build/nam-binary-loader \
 cmake --build build/nam-binary-loader
 ```
 
-Build the A1 firmware from the repository root, then upload locally licensed
-captures into the desired slots:
+Build the combined firmware from the repository root, then upload locally
+licensed captures into any desired slots:
 
 ```sh
-make a1 USE_IR=0
+make firmware USE_IR=0
 python3 tools/install_capture.py capture.nam --slot A
 ```
 
@@ -200,7 +208,7 @@ For an amp-only capture, embed one or two mono 48 kHz PCM WAV files and build
 with the IR bank enabled:
 
 ```sh
-make a1 USE_IR=1 \
+make firmware USE_IR=1 \
   IR_A="/absolute/path/to/cab-a.wav" \
   IR_B="/absolute/path/to/cab-b.wav"
 ```
@@ -226,11 +234,10 @@ best substitute for IR A.
 
 ### A2-Lite
 
-Set up the pinned A2 runtime once, build the firmware, then upload A2 captures:
+Upload compatible A2 captures to the same firmware and slots:
 
 ```sh
-make setup-a2
-make a2 USE_IR=0
+make firmware USE_IR=0
 python3 tools/install_capture.py "/absolute/path/to/capture.nam" --slot A
 ```
 
@@ -243,22 +250,12 @@ use the same `USE_IR=1 IR_A=... IR_B=...` options shown above. The
 combined A2-Lite + IR + EQ + reverb path must still be cycle-checked on hardware
 for the specific capture.
 
-An optional diagnostic build uses footswitch 2 to isolate input and output
-noise while keeping the A2 workload active:
-
-```sh
-make a2 A2_DIAGNOSTIC=1
-```
-
-Build outputs:
-
-- A1: `firmware/build/a1/hothouse_nam.bin`
-- A2-Lite: `firmware/build/a2/hothouse_nam_a2.bin`
+Build output: `firmware/build/combined/hothouse_nam.bin`
 
 From the repository root, start the enclosure-safe watcher and reconnect USB:
 
 ```sh
-./tools/wait_and_flash_hothouse.sh firmware/build/a2/hothouse_nam_a2.bin
+./tools/wait_and_flash_hothouse.sh firmware/build/combined/hothouse_nam.bin
 ```
 
 On macOS, the normal application enumerates as Electrosmith `Daisy Seed Built
@@ -285,13 +282,13 @@ make test
 It exercises capture command parsing and flash-store failure cases, the
 mute/settle/load/fade capture-transition controller at sample level, all three
 reverb engines, A1/A2 capture validation, A2 submodel selection, and installer
-transfer/cancellation behavior. The A1 and A2 cross-builds remain separate
-integration checks because their model engines depend on the embedded runtime.
+transfer/cancellation behavior. The combined embedded build verifies that both
+evaluators, their memory sections, and runtime dispatch fit in one image.
 
 ## Hardware validation still required
 
-The four build variants—A1/A2-Lite, each with and without an IR bank—need
-on-device audio and worst-case cycle validation. The new Dattorro, 16-line FDN,
+The combined build, with and without an IR bank, needs on-device audio and
+worst-case cycle validation for both model types. The Dattorro, 16-line FDN,
 and hybrid-space engines must be cycle-profiled against representative A1 and
 A2 captures before they are treated as pedal-safe. See
 [MILESTONES.md](MILESTONES.md).
@@ -300,6 +297,6 @@ A2 captures before they are treated as pedal-safe. See
 
 Project firmware is distributed under GPL-3.0, matching HothouseExamples.
 NeuralAmpModelerCore, nam-binary-loader, libDaisy and DaisySP retain their own
-licenses. The A2 build uses a pinned MIT-licensed runtime from DaisySeedProjects;
+licenses. The A2 evaluator uses a pinned MIT-licensed runtime from DaisySeedProjects;
 see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). NAM captures and cabinet
 IRs are not included; users must supply assets they are licensed to use.

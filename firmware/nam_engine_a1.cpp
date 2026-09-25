@@ -1,4 +1,4 @@
-#include "nam_engine.h"
+#include "nam_engine_backends.h"
 
 #include <cstdio>
 #include <exception>
@@ -9,41 +9,19 @@
 #include "NAM/dsp.h"
 #include "namb/get_dsp_namb.h"
 
-namespace hothouse_nam::model_engine
+namespace hothouse_nam::model_engine::a1
 {
 namespace
 {
-constexpr size_t kMaximumCaptureSize = 64U * 1024U;
-DSY_SDRAM_BSS alignas(4) uint8_t payload[kMaximumCaptureSize];
 std::unique_ptr<nam::DSP> model;
 double configured_sample_rate = 48000.0;
 size_t configured_block_size = 48;
 char last_error[128] = {};
 }
 
-const char* BackendId()
-{
-  return "a1_nano_relu";
-}
-
-CaptureFormat PayloadFormat()
-{
-  return CaptureFormat::A1Namb;
-}
-
-size_t PayloadCapacity()
-{
-  return sizeof(payload);
-}
-
 bool AcceptsPayloadSize(size_t size)
 {
-  return size != 0 && size <= sizeof(payload);
-}
-
-uint8_t* PayloadBuffer()
-{
-  return payload;
+  return size != 0 && size <= PayloadCapacity();
 }
 
 void Initialize(double sample_rate, size_t block_size)
@@ -58,7 +36,7 @@ void Clear()
   model.reset();
 }
 
-LoadMetrics Load(size_t payload_size)
+LoadMetrics Load(const uint8_t* payload, size_t payload_size)
 {
   LoadMetrics metrics;
   Clear();
@@ -104,4 +82,4 @@ void ProcessBlock48(float* input, float* output)
   model->process(&input_ptr, &output_ptr, 48);
 }
 
-} // namespace hothouse_nam::model_engine
+} // namespace hothouse_nam::model_engine::a1

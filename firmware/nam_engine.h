@@ -16,14 +16,14 @@ struct LoadMetrics
 };
 
 const char* BackendId();
-CaptureFormat PayloadFormat();
+const char* ActiveBackendId();
 size_t PayloadCapacity();
-bool AcceptsPayloadSize(size_t size);
+bool AcceptsPayload(CaptureFormat format, size_t size);
 uint8_t* PayloadBuffer();
 
 void Initialize(double sample_rate, size_t block_size);
 void Clear();
-LoadMetrics Load(size_t payload_size);
+LoadMetrics Load(CaptureFormat format, size_t payload_size);
 const char* LastError();
 bool IsLoaded();
 void ProcessBlock48(float* input, float* output);

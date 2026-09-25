@@ -131,6 +131,26 @@ class CaptureValidationTests(unittest.TestCase):
         self.assertEqual(name, "Test Amp")
         self.assertEqual(len(payload), 1871 * 4)
 
+    def test_combined_backend_selects_a2_capture_format(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "capture.nam"
+            path.write_text(json.dumps(valid_a2()), encoding="utf-8")
+            capture_format, _, payload = install_capture.prepare_capture(
+                "a1_a2", path, None
+            )
+        self.assertEqual(capture_format, "a2_weights_f32")
+        self.assertEqual(len(payload), 1871 * 4)
+
+    def test_combined_backend_accepts_a1_namb(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "capture.namb"
+            path.write_bytes(b"BMAN" + b"\0" * 32)
+            capture_format, _, payload = install_capture.prepare_capture(
+                "a1_a2", path, None
+            )
+        self.assertEqual(capture_format, "a1_namb")
+        self.assertEqual(payload[:4], b"BMAN")
+
     def test_namb_magic_and_size_are_checked(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "capture.namb"
@@ -183,6 +203,12 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(port.commands[-1], "HNAM COMMIT")
         data_commands = [command for command in port.commands if command.startswith("HNAM DATA")]
         self.assertGreater(len(data_commands), 1)
+
+    def test_install_combined_backend_uses_capture_format(self):
+        with tempfile.TemporaryDirectory() as directory:
+            port = FakePort()
+            install_capture.install(port, "a1_a2", self.write_model(directory), None, "B")
+        self.assertTrue(port.commands[0].startswith("HNAM BEGIN B a2_weights_f32"))
 
     def test_install_cancels_failed_transfer(self):
         with tempfile.TemporaryDirectory() as directory:

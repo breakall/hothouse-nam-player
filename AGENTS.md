@@ -37,16 +37,10 @@ Seed from this repository.
 5. Verify `Download done` and `File downloaded successfully`, then query the
    rebooted firmware over serial to confirm its reported backend.
 
-The known-good A1 command is:
+The combined A1/A2 command is:
 
 ```sh
-./tools/wait_and_flash_hothouse.sh firmware/build/a1/hothouse_nam.bin
-```
-
-The known-good A2 command is:
-
-```sh
-./tools/wait_and_flash_hothouse.sh firmware/build/a2/hothouse_nam_a2.bin
+./tools/wait_and_flash_hothouse.sh firmware/build/combined/hothouse_nam.bin
 ```
 
 Do not attribute a missed flash to the bootloader timeout without first running

@@ -280,8 +280,7 @@ bool SelectCaptureSlot(uint8_t slot, bool audio_running)
   CaptureInfo info;
   const CaptureSlotState state = capture_store.Inspect(slot, &info);
   const bool payload_ready = state == CaptureSlotState::Valid
-      && info.format == model_engine::PayloadFormat()
-      && model_engine::AcceptsPayloadSize(info.size)
+      && model_engine::AcceptsPayload(info.format, info.size)
       && capture_store.ReadPayload(slot, info, model_engine::PayloadBuffer(),
                                    model_engine::PayloadCapacity());
   if(audio_running)
@@ -289,7 +288,7 @@ bool SelectCaptureSlot(uint8_t slot, bool audio_running)
   model_engine::Clear();
   model_engine::LoadMetrics metrics;
   if(payload_ready)
-    metrics = model_engine::Load(info.size);
+    metrics = model_engine::Load(info.format, info.size);
   if(payload_ready && !metrics.loaded && model_engine::LastError()[0] != '\0')
     UsbLog("capture slot %c rejected: %s", 'A' + slot,
            model_engine::LastError());
@@ -322,8 +321,7 @@ void QueueCaptureSlots()
     CaptureInfo info;
     const CaptureSlotState state = capture_store.Inspect(slot, &info);
     const bool compatible = state == CaptureSlotState::Valid
-        && info.format == model_engine::PayloadFormat()
-        && model_engine::AcceptsPayloadSize(info.size);
+        && model_engine::AcceptsPayload(info.format, info.size);
     states[slot] = compatible ? "installed"
         : (state == CaptureSlotState::Empty ? "empty" : "invalid");
   }
@@ -337,8 +335,7 @@ void QueueCaptureSlot(uint8_t slot)
   CaptureInfo info;
   const CaptureSlotState state = capture_store.Inspect(slot, &info);
   const bool compatible = state == CaptureSlotState::Valid
-      && info.format == model_engine::PayloadFormat()
-      && model_engine::AcceptsPayloadSize(info.size);
+      && model_engine::AcceptsPayload(info.format, info.size);
   if(!compatible)
   {
     QueueCaptureReply("HNAM OK SLOT %c %s unknown 0 00000000 -", 'A' + slot,
@@ -377,8 +374,7 @@ void HandleCaptureCommand(char* line)
         ? capture_store.Inspect(active_capture_slot, &info)
         : CaptureSlotState::Empty;
     if(state == CaptureSlotState::Valid
-       && info.format == model_engine::PayloadFormat()
-       && model_engine::AcceptsPayloadSize(info.size))
+       && model_engine::AcceptsPayload(info.format, info.size))
       QueueCaptureReply("HNAM OK INFO %s installed %lu %08lx",
                         model_engine::BackendId(),
                         static_cast<unsigned long>(info.size),
@@ -394,8 +390,7 @@ void HandleCaptureCommand(char* line)
     QueueCaptureSlot(command.slot);
   else if(command.type == CommandType::Begin)
   {
-    if(command.format != model_engine::PayloadFormat()
-       || !model_engine::AcceptsPayloadSize(command.size))
+    if(!model_engine::AcceptsPayload(command.format, command.size))
       QueueCaptureReply("HNAM ERR incompatible_capture");
     else if(!capture_store.Begin(command.slot, command.name, command.format, command.size,
                                  command.crc32))
@@ -987,7 +982,7 @@ void BenchmarkModel()
 
   DWT->CYCCNT = 0;
   model_engine::ProcessBlock48(mono_in, mono_out);
-  UsbLog("%s benchmark cycles=%lu", model_engine::BackendId(),
+  UsbLog("%s benchmark cycles=%lu", model_engine::ActiveBackendId(),
          static_cast<unsigned long>(DWT->CYCCNT));
 }
 
@@ -1119,7 +1114,7 @@ int main()
     if(now_ms - last_log_ms >= 1000U)
     {
       UsbLog("%s cycles=%lu max=%lu model=%s",
-             model_engine::BackendId(),
+             model_engine::ActiveBackendId(),
              static_cast<unsigned long>(cb_process_cycles),
              static_cast<unsigned long>(cb_max_cycles),
              model_engine::IsLoaded() ? "ready" : "bypassed");

@@ -2,7 +2,6 @@ IR ?=
 IR_A ?= $(IR)
 IR_B ?=
 USE_IR ?= 0
-A2_DIAGNOSTIC ?= 0
 CAPTURE ?=
 SLOT ?= A
 HOST_CXX ?= c++
@@ -19,7 +18,7 @@ export GCC_PATH
 
 A2_RUNTIME = external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam/nam_a2_runtime.h
 
-.PHONY: a1 a2 clean-a1 clean-a2 setup-a2 require-ir embed-ir-bank install-capture list-captures test
+.PHONY: firmware a1 a2 clean-firmware clean-a1 clean-a2 setup-a2 require-ir embed-ir-bank install-capture list-captures test
 
 test: $(HOST_TEST_BUILD)/capture_loader_test $(HOST_TEST_BUILD)/capture_transition_test $(HOST_TEST_BUILD)/reverb_engines_test
 	$(HOST_TEST_BUILD)/capture_loader_test
@@ -47,25 +46,22 @@ require-ir:
 embed-ir-bank: require-ir
 	@test "$(USE_IR)" = "0" || python3 tools/embed_ir_bank.py "$(IR_A)" $(if $(IR_B),"$(IR_B)") -o firmware/embedded_ir_bank.h
 
-a1: require-ir embed-ir-bank
+firmware: require-ir embed-ir-bank
+	@test -f "$(A2_RUNTIME)" || { echo "A2 runtime missing; run: make setup-a2" >&2; exit 2; }
 	mkdir -p firmware/build
-	$(MAKE) -C firmware BUILD_DIR=build/a1 clean
-	$(MAKE) -C firmware BUILD_DIR=build/a1 USE_IR=$(USE_IR)
+	$(MAKE) -C firmware BUILD_DIR=build/combined clean
+	$(MAKE) -C firmware BUILD_DIR=build/combined USE_IR=$(USE_IR)
 
 setup-a2:
 	./tools/setup_a2_dependencies.sh
 
-a2: require-ir embed-ir-bank
-	@test -f "$(A2_RUNTIME)" || { echo "A2 runtime missing; run: make setup-a2" >&2; exit 2; }
-	mkdir -p firmware/build
-	$(MAKE) -C firmware -f Makefile.a2 BUILD_DIR=build/a2 clean
-	$(MAKE) -C firmware -f Makefile.a2 BUILD_DIR=build/a2 DIAGNOSTIC=$(A2_DIAGNOSTIC) USE_IR=$(USE_IR)
+a1 a2: firmware
+	@echo "A1 and A2 now use the same combined firmware image."
 
-clean-a1:
-	$(MAKE) -C firmware BUILD_DIR=build/a1 clean
+clean-firmware:
+	$(MAKE) -C firmware BUILD_DIR=build/combined clean
 
-clean-a2:
-	$(MAKE) -C firmware -f Makefile.a2 BUILD_DIR=build/a2 clean
+clean-a1 clean-a2: clean-firmware
 
 install-capture:
 	@test -n "$(CAPTURE)" || { echo "CAPTURE is required" >&2; exit 2; }

@@ -14,6 +14,7 @@ GCC_PATH ?= $(ARM_GNU_TOOLCHAIN_BIN)
 endif
 endif
 LDFLAGS = -u _printf_float
+LDFLAGS += -T"$(abspath nam_a2_sections.lds)"
 MODEL ?=
 IR ?=
 USE_IR ?= 0
@@ -21,8 +22,10 @@ EMBED_SCRIPT = ../tools/embed_model.py
 
 CPP_SOURCES = \
   hothouse_nam_host.cpp \
+  nam_engine.cpp \
   nam_engine_a1.cpp \
-  ../hothouse.cpp \
+  nam_engine_a2.cpp \
+  hothouse.cpp \
   ../nam-pedal/nam-binary-loader/namb/get_dsp_namb.cpp \
   ../nam-pedal/NeuralAmpModelerCore/NAM/activations.cpp \
   ../nam-pedal/NeuralAmpModelerCore/NAM/conv1d.cpp \
@@ -36,7 +39,8 @@ C_INCLUDES = \
   -I../nam-pedal/NeuralAmpModelerCore \
   -I../nam-pedal/NeuralAmpModelerCore/Dependencies/eigen \
   -I../nam-pedal/NeuralAmpModelerCore/Dependencies/nlohmann \
-  -I../nam-pedal/nam-binary-loader
+  -I../nam-pedal/nam-binary-loader \
+  -I../external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam
 
 C_DEFS = \
   -DNAM_SAMPLE_FLOAT \

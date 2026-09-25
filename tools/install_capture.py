@@ -245,6 +245,25 @@ def prepare_a2(path: pathlib.Path) -> tuple[str, bytes]:
 
 def prepare_capture(backend: str, path: pathlib.Path,
                     converter: pathlib.Path | None) -> tuple[str, str, bytes]:
+    if backend == "a1_a2":
+        if path.suffix.lower() == ".namb":
+            name, payload = prepare_a1(path, converter)
+            return "a1_namb", name, payload
+        if path.suffix.lower() != ".nam":
+            raise ProtocolError("Combined firmware accepts .nam or .namb files.")
+        try:
+            name, payload = prepare_a2(path)
+            return "a2_weights_f32", name, payload
+        except ProtocolError as a2_error:
+            try:
+                name, payload = prepare_a1(path, converter)
+                return "a1_namb", name, payload
+            except ProtocolError as a1_error:
+                raise ProtocolError(
+                    "Capture is not compatible with this pedal. "
+                    f"A2-Lite check: {a2_error}. A1 Nano-ReLU check: {a1_error}"
+                ) from a1_error
+
     adapters = {
         "a1_nano_relu": (
             "a1_namb", lambda: prepare_a1(path, converter),
