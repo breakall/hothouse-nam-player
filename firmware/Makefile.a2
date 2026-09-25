@@ -4,7 +4,14 @@ APP_TYPE = BOOT_SRAM
 USE_DAISYSP_LGPL = 1
 OPT = -Ofast
 CPP_STANDARD = -std=gnu++17
+ifneq ($(wildcard ../external/arm-toolchain-pkg/Payload/bin/arm-none-eabi-gcc),)
 GCC_PATH ?= ../external/arm-toolchain-pkg/Payload/bin
+else
+ARM_GNU_TOOLCHAIN_BIN := $(patsubst %/,%,$(lastword $(sort $(dir $(wildcard /Applications/ArmGNUToolchain/*/arm-none-eabi/bin/arm-none-eabi-gcc)))))
+ifneq ($(ARM_GNU_TOOLCHAIN_BIN),)
+GCC_PATH ?= $(ARM_GNU_TOOLCHAIN_BIN)
+endif
+endif
 LDFLAGS = -T"$(abspath nam_a2_sections.lds)"
 MODEL ?=
 DIAGNOSTIC ?= 0
@@ -13,7 +20,8 @@ SIZE_BUILD ?= 0
 EMBED_SCRIPT = ../tools/embed_a2_model.py
 
 CPP_SOURCES = \
-  hothouse_nam_a2.cpp \
+  hothouse_nam_host.cpp \
+  nam_engine_a2.cpp \
   hothouse.cpp
 
 C_INCLUDES = \
@@ -21,9 +29,9 @@ C_INCLUDES = \
   -I../external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam
 
 C_DEFS = \
-  -DHOTHOUSE_A2_DIAGNOSTIC=$(DIAGNOSTIC) \
+  -DHOTHOUSE_DIAGNOSTIC=$(DIAGNOSTIC) \
+  -DHOTHOUSE_SIZE_BUILD=$(SIZE_BUILD) \
   -DHOTHOUSE_USE_IR=$(USE_IR) \
-  -DHOTHOUSE_A2_SIZE_BUILD=$(SIZE_BUILD) \
   -D__ARM_ARCH_7EM__
 
 LIBDAISY_DIR = ../HothouseExamples/libDaisy

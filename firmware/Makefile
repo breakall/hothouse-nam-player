@@ -5,7 +5,14 @@ APP_TYPE = BOOT_SRAM
 USE_DAISYSP_LGPL = 1
 OPT = -O3
 CPP_STANDARD = -std=gnu++17
+ifneq ($(wildcard ../external/arm-toolchain-pkg/Payload/bin/arm-none-eabi-gcc),)
 GCC_PATH ?= ../external/arm-toolchain-pkg/Payload/bin
+else
+ARM_GNU_TOOLCHAIN_BIN := $(patsubst %/,%,$(lastword $(sort $(dir $(wildcard /Applications/ArmGNUToolchain/*/arm-none-eabi/bin/arm-none-eabi-gcc)))))
+ifneq ($(ARM_GNU_TOOLCHAIN_BIN),)
+GCC_PATH ?= $(ARM_GNU_TOOLCHAIN_BIN)
+endif
+endif
 LDFLAGS = -u _printf_float
 MODEL ?=
 IR ?=
@@ -13,7 +20,8 @@ USE_IR ?= 0
 EMBED_SCRIPT = ../tools/embed_model.py
 
 CPP_SOURCES = \
-  hothouse_nam.cpp \
+  hothouse_nam_host.cpp \
+  nam_engine_a1.cpp \
   ../hothouse.cpp \
   ../nam-pedal/nam-binary-loader/namb/get_dsp_namb.cpp \
   ../nam-pedal/NeuralAmpModelerCore/NAM/activations.cpp \
@@ -35,6 +43,8 @@ C_DEFS = \
   -DNAM_USE_INLINE_GEMM \
   -DNAM_DISABLE_JSON_REGISTRY \
   -DNAM_NAMB_WAVENET_ONLY \
+  -DHOTHOUSE_DIAGNOSTIC=0 \
+  -DHOTHOUSE_SIZE_BUILD=0 \
   -DHOTHOUSE_USE_IR=$(USE_IR) \
   -D__ARM_ARCH_7EM__
 

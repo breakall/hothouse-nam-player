@@ -3,22 +3,22 @@
 #include <cstdint>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
+#include <new>
 
 #include "daisy.h"
 #include "daisysp.h"
 #include "daisysp-lgpl.h"
-#include "embedded_a2_model.h"
+#include "sys/dma.h"
 #include "capture_loader.h"
+#include "capture_transition.h"
+#include "reverb_config.h"
+#include "reverb_rack.h"
+#include "nam_engine.h"
 #if HOTHOUSE_USE_IR
 #include "embedded_ir_bank.h"
 #endif
 #include "hothouse.h"
-#if HOTHOUSE_A2_SIZE_BUILD
-// Keep the control/USB firmware compact enough for the Seed's 128 KB internal
-// flash, while retaining speed optimization on the A2 audio kernels.
-#define NAM_A2_NOINLINE __attribute__((noinline, optimize("O2")))
-#endif
-#include "nam_a2_runtime.h"
 
 using clevelandmusicco::Hothouse;
 using daisy::AudioHandle;
@@ -26,7 +26,6 @@ using daisy::Led;
 using daisy::PersistentStorage;
 using daisy::SaiHandle;
 using daisy::System;
-using daisysp::ReverbSc;
 #if HOTHOUSE_USE_IR
 using daisysp::FIR;
 #endif
@@ -34,13 +33,20 @@ using daisysp::fonepole;
 using hothouse_nam::ByteRing;
 using hothouse_nam::CaptureFormat;
 using hothouse_nam::CaptureInfo;
+using hothouse_nam::CaptureSlotState;
 using hothouse_nam::CaptureStore;
+using hothouse_nam::CaptureTransitionController;
 using hothouse_nam::Command;
 using hothouse_nam::CommandType;
+using hothouse_nam::ReverbConfigStore;
+using hothouse_nam::ReverbId;
+using hothouse_nam::ReverbRack;
+using hothouse_nam::ReverbSlotConfig;
+namespace model_engine = hothouse_nam::model_engine;
 
 namespace
 {
-constexpr size_t kAudioBlockSize = nam_a2_daisy::kBlockSize;
+constexpr size_t kAudioBlockSize = 48;
 constexpr uint32_t kCycleBudget = 480000;
 #if HOTHOUSE_USE_IR
 constexpr size_t kMaxIrLength = 1024;
@@ -55,19 +61,13 @@ constexpr float kGateOpenThreshold = 0.001f;
 constexpr float kGateCloseThreshold = 0.0005f;
 constexpr float kBassLowpassCoefficient = 0.032195f;  // 250 Hz at 48 kHz
 constexpr float kTrebleLowpassCoefficient = 0.279675f; // 2.5 kHz at 48 kHz
-constexpr float kRoomFeedback = 0.78f;
-constexpr float kRoomDampingHz = 12000.0f;
-constexpr float kHallFeedback = 0.92f;
-constexpr float kHallDampingHz = 7000.0f;
 constexpr uint32_t kPresetMagic = 0x48505253; // "HPRS"
 constexpr uint32_t kPresetVersion = 1;
 constexpr uint32_t kPresetQspiOffset = 0x007ff000;
 constexpr uint32_t kPresetHoldMs = 1500;
 constexpr uint32_t kPresetSavedIndicationMs = 1000;
 constexpr float kPresetKnobMovementThreshold = 0.02f;
-static_assert(kAudioBlockSize == 48, "A2-Lite runtime requires 48-sample blocks");
-static_assert(embedded_a2_model::kWeightCount == nam_a2_daisy::kA2WeightCount,
-              "Embedded model does not match the A2-Lite runtime");
+static_assert(kAudioBlockSize == 48, "NAM engines require 48-sample blocks");
 
 struct SmoothedFloat
 {
@@ -103,8 +103,9 @@ struct PresetSettings
 };
 
 Hothouse hw;
-NAM_A2_STATE_DATA static nam_a2_daisy::A2Player model;
-ReverbSc DSY_SDRAM_BSS reverb;
+DSY_SDRAM_BSS alignas(ReverbRack)
+uint8_t reverb_rack_storage[sizeof(ReverbRack)];
+ReverbRack* reverb_rack = nullptr;
 #if HOTHOUSE_USE_IR
 FIR<kMaxIrLength, kAudioBlockSize> cabinet_irs[2];
 #endif
@@ -133,19 +134,27 @@ class DaisyFlashBackend
 
   bool Write(uint32_t offset, const uint8_t* input, size_t length)
   {
-    return System::GetProgramMemoryRegion() != System::MemoryRegion::QSPI
+    const bool written = System::GetProgramMemoryRegion() != System::MemoryRegion::QSPI
         && input != nullptr && offset <= 0x00800000U
         && length <= 0x00800000U - offset
         && qspi_.Write(offset, static_cast<uint32_t>(length),
                        const_cast<uint8_t*>(input)) == daisy::QSPIHandle::OK;
+    if(written)
+      dsy_dma_invalidate_cache_for_buffer(
+          static_cast<uint8_t*>(qspi_.GetData(offset)), length);
+    return written;
   }
 
   bool Erase(uint32_t offset, uint32_t length)
   {
-    return System::GetProgramMemoryRegion() != System::MemoryRegion::QSPI
+    const bool erased = System::GetProgramMemoryRegion() != System::MemoryRegion::QSPI
         && length != 0 && offset <= 0x00800000U
         && length <= 0x00800000U - offset
         && qspi_.Erase(offset, offset + length) == daisy::QSPIHandle::OK;
+    if(erased)
+      dsy_dma_invalidate_cache_for_buffer(
+          static_cast<uint8_t*>(qspi_.GetData(offset)), length);
+    return erased;
   }
 
  private:
@@ -154,8 +163,8 @@ class DaisyFlashBackend
 
 DaisyFlashBackend capture_flash(hw.seed.qspi);
 CaptureStore<DaisyFlashBackend> capture_store(capture_flash);
+ReverbConfigStore<DaisyFlashBackend> reverb_config_store(capture_flash);
 ByteRing<1024> capture_usb_rx;
-alignas(32) float capture_weights[nam_a2_daisy::kA2WeightCount] = {};
 char capture_line[320] = {};
 size_t capture_line_length = 0;
 char capture_reply[192] = {};
@@ -186,11 +195,14 @@ char usb_log_buffers[2][192] = {};
 uint8_t usb_log_active_buffer = 1;
 
 volatile bool effect_enabled = false;
-volatile bool model_loaded = false;
+volatile bool capture_fault = false;
 volatile bool reverb_ready = false;
 volatile bool reverb_enabled = false;
+volatile ReverbRack::Position reverb_position = ReverbRack::Position::Off;
 volatile uint32_t cb_process_cycles = 0;
 volatile uint32_t cb_max_cycles = 0;
+uint8_t active_capture_slot = 0xffU;
+CaptureTransitionController capture_transition;
 bool preset_engaged = false;
 bool preset_press_active = false;
 bool preset_long_press_handled = false;
@@ -202,13 +214,20 @@ float preset_working_knobs[Hothouse::KNOB_LAST] = {};
 Hothouse::ToggleswitchPosition preset_working_toggles[3] = {};
 bool preset_knob_overridden[Hothouse::KNOB_LAST] = {};
 bool preset_toggle_overridden[3] = {};
-#if HOTHOUSE_A2_DIAGNOSTIC
+#if HOTHOUSE_DIAGNOSTIC
 volatile uint8_t diagnostic_mode = 0;
 #endif
 
 void AudioCallback(AudioHandle::InputBuffer in,
                    AudioHandle::OutputBuffer out,
                    size_t size);
+void UsbLog(const char* format, ...);
+bool HandleReverbCommand(char* line);
+
+void ApplyCaptureTransition(AudioHandle::OutputBuffer out, size_t size)
+{
+  capture_transition.ApplyOutput(out[0], out[1], size);
+}
 
 void CaptureUsbReceive(uint8_t* bytes, uint32_t* length)
 {
@@ -242,28 +261,109 @@ void FlushCaptureReply()
     capture_reply_length = 0;
 }
 
-bool LoadInstalledCapture(const CaptureInfo& info, bool audio_running)
+uint8_t CaptureSlotFromPanel()
 {
-  if(info.format != CaptureFormat::A2WeightsF32
-     || info.size != sizeof(capture_weights)
-     || !capture_store.ReadPayload(
-          info, reinterpret_cast<uint8_t*>(capture_weights),
-          sizeof(capture_weights)))
+  switch(hw.GetToggleswitchPosition(Hothouse::TOGGLESWITCH_3))
+  {
+    case Hothouse::TOGGLESWITCH_UP: return 0;
+    case Hothouse::TOGGLESWITCH_MIDDLE: return 1;
+    case Hothouse::TOGGLESWITCH_DOWN: return 2;
+    default: return 0xffU;
+  }
+}
+
+bool SelectCaptureSlot(uint8_t slot, bool audio_running)
+{
+  if(slot >= CaptureStore<DaisyFlashBackend>::SlotCount)
     return false;
+
+  CaptureInfo info;
+  const CaptureSlotState state = capture_store.Inspect(slot, &info);
+  const bool payload_ready = state == CaptureSlotState::Valid
+      && info.format == model_engine::PayloadFormat()
+      && model_engine::AcceptsPayloadSize(info.size)
+      && capture_store.ReadPayload(slot, info, model_engine::PayloadBuffer(),
+                                   model_engine::PayloadCapacity());
   if(audio_running)
     hw.StopAudio();
-  const bool loaded = model.load_weights(capture_weights,
-                                         nam_a2_daisy::kA2WeightCount);
-  model_loaded = loaded;
-  effect_enabled = loaded;
+  model_engine::Clear();
+  model_engine::LoadMetrics metrics;
+  if(payload_ready)
+    metrics = model_engine::Load(info.size);
+  if(payload_ready && !metrics.loaded && model_engine::LastError()[0] != '\0')
+    UsbLog("capture slot %c rejected: %s", 'A' + slot,
+           model_engine::LastError());
+  const bool loaded = metrics.loaded;
+  active_capture_slot = slot;
+  capture_fault = state == CaptureSlotState::Invalid
+      || (state == CaptureSlotState::Valid && !loaded);
   cb_max_cycles = 0;
   if(audio_running)
     hw.StartAudio(AudioCallback);
+  UsbLog("capture slot %c: %s", 'A' + slot,
+         loaded ? info.name
+                : (capture_fault ? "invalid" : "empty (NAM bypass)"));
+  if(loaded)
+    UsbLog("capture slot %c load: construct=%lu cycles (%.2f ms), "
+           "prepare=%lu cycles (%.2f ms)",
+           'A' + slot,
+           static_cast<unsigned long>(metrics.construct_cycles),
+           metrics.construct_cycles / 480000.0f,
+           static_cast<unsigned long>(metrics.prepare_cycles),
+           metrics.prepare_cycles / 480000.0f);
   return loaded;
+}
+
+void QueueCaptureSlots()
+{
+  const char* states[3] = {};
+  for(uint8_t slot = 0; slot < 3; ++slot)
+  {
+    CaptureInfo info;
+    const CaptureSlotState state = capture_store.Inspect(slot, &info);
+    const bool compatible = state == CaptureSlotState::Valid
+        && info.format == model_engine::PayloadFormat()
+        && model_engine::AcceptsPayloadSize(info.size);
+    states[slot] = compatible ? "installed"
+        : (state == CaptureSlotState::Empty ? "empty" : "invalid");
+  }
+  QueueCaptureReply("HNAM OK SLOTS active=%c A=%s B=%s C=%s",
+                    active_capture_slot < 3 ? 'A' + active_capture_slot : '-',
+                    states[0], states[1], states[2]);
+}
+
+void QueueCaptureSlot(uint8_t slot)
+{
+  CaptureInfo info;
+  const CaptureSlotState state = capture_store.Inspect(slot, &info);
+  const bool compatible = state == CaptureSlotState::Valid
+      && info.format == model_engine::PayloadFormat()
+      && model_engine::AcceptsPayloadSize(info.size);
+  if(!compatible)
+  {
+    QueueCaptureReply("HNAM OK SLOT %c %s unknown 0 00000000 -", 'A' + slot,
+                      state == CaptureSlotState::Empty ? "empty" : "invalid");
+    return;
+  }
+  char name_hex[sizeof(info.name) * 2U] = {};
+  const size_t name_length = std::strlen(info.name);
+  if(!hothouse_nam::EncodeHex(reinterpret_cast<const uint8_t*>(info.name),
+                              name_length, name_hex, sizeof(name_hex)))
+  {
+    QueueCaptureReply("HNAM OK SLOT %c invalid unknown 0 00000000 -",
+                      'A' + slot);
+    return;
+  }
+  QueueCaptureReply("HNAM OK SLOT %c installed %s %lu %08lx %s", 'A' + slot,
+                    hothouse_nam::CaptureFormatName(info.format),
+                    static_cast<unsigned long>(info.size),
+                    static_cast<unsigned long>(info.crc32), name_hex);
 }
 
 void HandleCaptureCommand(char* line)
 {
+  if(HandleReverbCommand(line))
+    return;
   Command command;
   if(!hothouse_nam::ParseCommand(line, command))
   {
@@ -273,24 +373,39 @@ void HandleCaptureCommand(char* line)
   if(command.type == CommandType::Info)
   {
     CaptureInfo info;
-    if(capture_store.ReadInfo(info)
-       && info.format == CaptureFormat::A2WeightsF32)
-      QueueCaptureReply("HNAM OK INFO a2_lite installed %lu %08lx",
+    const CaptureSlotState state = active_capture_slot < 3
+        ? capture_store.Inspect(active_capture_slot, &info)
+        : CaptureSlotState::Empty;
+    if(state == CaptureSlotState::Valid
+       && info.format == model_engine::PayloadFormat()
+       && model_engine::AcceptsPayloadSize(info.size))
+      QueueCaptureReply("HNAM OK INFO %s installed %lu %08lx",
+                        model_engine::BackendId(),
                         static_cast<unsigned long>(info.size),
                         static_cast<unsigned long>(info.crc32));
     else
-      QueueCaptureReply("HNAM OK INFO a2_lite factory 0 00000000");
+      QueueCaptureReply("HNAM OK INFO %s %s 0 00000000",
+                        model_engine::BackendId(),
+                        state == CaptureSlotState::Empty ? "empty" : "invalid");
   }
+  else if(command.type == CommandType::Slots)
+    QueueCaptureSlots();
+  else if(command.type == CommandType::Slot)
+    QueueCaptureSlot(command.slot);
   else if(command.type == CommandType::Begin)
   {
-    if(command.format != CaptureFormat::A2WeightsF32
-       || command.size != sizeof(capture_weights))
+    if(command.format != model_engine::PayloadFormat()
+       || !model_engine::AcceptsPayloadSize(command.size))
       QueueCaptureReply("HNAM ERR incompatible_capture");
-    else if(!capture_store.Begin(command.name, command.format, command.size,
+    else if(!capture_store.Begin(command.slot, command.name, command.format, command.size,
                                  command.crc32))
       QueueCaptureReply("HNAM ERR begin_failed");
     else
+    {
+      if(command.slot == active_capture_slot)
+        SelectCaptureSlot(active_capture_slot, true);
       QueueCaptureReply("HNAM OK BEGIN 0");
+    }
   }
   else if(command.type == CommandType::Data)
   {
@@ -304,16 +419,18 @@ void HandleCaptureCommand(char* line)
   else if(command.type == CommandType::Commit)
   {
     CaptureInfo info;
+    const uint8_t slot = capture_store.UploadSlot();
     if(!capture_store.Commit(info))
-      QueueCaptureReply("HNAM ERR commit_failed");
-    else if(!LoadInstalledCapture(info, true))
+      QueueCaptureReply("HNAM ERR commit_%s",
+                        hothouse_nam::CaptureCommitStatusName(
+                            capture_store.LastCommitStatus()));
+    else if(slot == active_capture_slot && !SelectCaptureSlot(slot, true))
     {
-      hw.StopAudio();
-      model_loaded = model.load_weights(embedded_a2_model::kWeights,
-                                        embedded_a2_model::kWeightCount);
-      effect_enabled = model_loaded;
-      hw.StartAudio(AudioCallback);
-      QueueCaptureReply("HNAM ERR activate_failed");
+      if(capture_fault)
+        QueueCaptureReply("HNAM ERR activate_failed");
+      else
+        QueueCaptureReply("HNAM OK COMMIT %08lx",
+                          static_cast<unsigned long>(info.crc32));
     }
     else
       QueueCaptureReply("HNAM OK COMMIT %08lx",
@@ -323,6 +440,17 @@ void HandleCaptureCommand(char* line)
   {
     capture_store.Cancel();
     QueueCaptureReply("HNAM OK CANCEL");
+  }
+  else if(command.type == CommandType::Delete)
+  {
+    if(!capture_store.EraseSlot(command.slot))
+      QueueCaptureReply("HNAM ERR delete_failed");
+    else
+    {
+      if(command.slot == active_capture_slot)
+        SelectCaptureSlot(command.slot, true);
+      QueueCaptureReply("HNAM OK DELETE %c", 'A' + command.slot);
+    }
   }
 }
 
@@ -562,24 +690,93 @@ void UpdateReverbControls()
   switch(position)
   {
     case Hothouse::TOGGLESWITCH_UP:
-      reverb.SetFeedback(kRoomFeedback);
-      reverb.SetLpFreq(kRoomDampingHz);
       reverb_enabled = reverb_ready;
+      reverb_position = ReverbRack::Position::Up;
       break;
     case Hothouse::TOGGLESWITCH_DOWN:
-      reverb.SetFeedback(kHallFeedback);
-      reverb.SetLpFreq(kHallDampingHz);
       reverb_enabled = reverb_ready;
+      reverb_position = ReverbRack::Position::Down;
       break;
     case Hothouse::TOGGLESWITCH_MIDDLE:
     case Hothouse::TOGGLESWITCH_UNKNOWN:
     default:
       reverb_enabled = false;
+      reverb_position = ReverbRack::Position::Off;
       break;
   }
 
   reverb_mix_smoothed.target
       = reverb_enabled ? ActiveKnob(Hothouse::KNOB_2) : 0.0f;
+}
+
+bool HandleReverbCommand(char* line)
+{
+  if(std::strncmp(line, "HNAM REVERB ", 12) != 0)
+    return false;
+  char* save = nullptr;
+  char* prefix = ::strtok_r(line, " ", &save);
+  char* noun = ::strtok_r(nullptr, " ", &save);
+  char* verb = ::strtok_r(nullptr, " ", &save);
+  if(prefix == nullptr || noun == nullptr || verb == nullptr
+     || std::strcmp(prefix, "HNAM") != 0 || std::strcmp(noun, "REVERB") != 0)
+    return false;
+  if(std::strcmp(verb, "LIST") == 0 && ::strtok_r(nullptr, " ", &save) == nullptr)
+  {
+    QueueCaptureReply("HNAM OK REVERB LIST reverbsc dattorro fdn16 hybrid");
+    return true;
+  }
+  if(std::strcmp(verb, "INFO") == 0 && ::strtok_r(nullptr, " ", &save) == nullptr)
+  {
+    const ReverbSlotConfig& config = reverb_rack->Config();
+    QueueCaptureReply("HNAM OK REVERB INFO up=%s down=%s",
+                      hothouse_nam::ReverbIdName(config.up),
+                      hothouse_nam::ReverbIdName(config.down));
+    return true;
+  }
+  if(std::strcmp(verb, "MAP") == 0)
+  {
+    char* position = ::strtok_r(nullptr, " ", &save);
+    char* engine = ::strtok_r(nullptr, " ", &save);
+    if(position == nullptr || engine == nullptr || ::strtok_r(nullptr, " ", &save) != nullptr)
+    {
+      QueueCaptureReply("HNAM ERR reverb_map_syntax");
+      return true;
+    }
+    const ReverbSlotConfig previous = reverb_rack->Config();
+    ReverbSlotConfig config = previous;
+    const ReverbId id = hothouse_nam::ParseReverbId(engine);
+    if(id == ReverbId::Invalid || (std::strcmp(position, "UP") != 0
+                                   && std::strcmp(position, "DOWN") != 0))
+    {
+      QueueCaptureReply("HNAM ERR unknown_reverb");
+      return true;
+    }
+    if(std::strcmp(position, "UP") == 0)
+      config.up = id;
+    else
+      config.down = id;
+    if(!hothouse_nam::ValidReverbSlotConfig(config))
+    {
+      QueueCaptureReply("HNAM ERR duplicate_reverb");
+      return true;
+    }
+    hw.StopAudio();
+    const bool configured = reverb_rack->Configure(config);
+    const bool saved = configured && reverb_config_store.Save(config);
+    reverb_ready = configured && saved;
+    if(!saved)
+      reverb_ready = reverb_rack->Configure(previous);
+    hw.StartAudio(AudioCallback);
+    if(!saved)
+      QueueCaptureReply("HNAM ERR reverb_save_failed");
+    else
+      QueueCaptureReply("HNAM OK REVERB MAP up=%s down=%s",
+                        hothouse_nam::ReverbIdName(config.up),
+                        hothouse_nam::ReverbIdName(config.down));
+    return true;
+  }
+  QueueCaptureReply("HNAM ERR reverb_command");
+  return true;
 }
 
 void CheckStartupRecovery()
@@ -603,11 +800,11 @@ void UpdateLedState()
 {
   led_effect.Set(effect_enabled ? 1.0f : 0.0f);
   const uint32_t now_ms = System::GetNow();
-  const bool fault = !model_loaded || cb_max_cycles >= kCycleBudget;
+  const bool fault = capture_fault || cb_max_cycles >= kCycleBudget;
   bool status_on = fault ? ((now_ms / 125U) & 1U) != 0U : preset_engaged;
   if(!fault && static_cast<int32_t>(preset_saved_indication_until - now_ms) > 0)
     status_on = ((now_ms / 100U) & 1U) != 0U;
-#if HOTHOUSE_A2_DIAGNOSTIC
+#if HOTHOUSE_DIAGNOSTIC
   if(!status_on && diagnostic_mode == 1)
     status_on = true;
   else if(!status_on && diagnostic_mode == 2)
@@ -668,35 +865,48 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 {
   __set_FPSCR(__get_FPSCR() | (1U << 24) | (1U << 25));
 
-  if(effect_enabled && model_loaded && size == kAudioBlockSize)
+  if(effect_enabled && size == kAudioBlockSize)
   {
     const uint32_t cyc0 = DWT->CYCCNT;
+    const bool model_loaded = model_engine::IsLoaded();
     for(size_t i = 0; i < size; ++i)
     {
       const float input = in[0][i];
-      const float magnitude = std::fabs(input);
-      const float envelope_coefficient = magnitude > input_envelope ? 0.05f : 0.0002f;
-      fonepole(input_envelope, magnitude, envelope_coefficient);
-
-      if(input_gate_open)
+      const float gained_input = input * input_gain_smoothed.Tick();
+      if(model_loaded)
       {
-        if(input_envelope < kGateCloseThreshold)
-          input_gate_open = false;
+        const float magnitude = std::fabs(input);
+        const float envelope_coefficient
+            = magnitude > input_envelope ? 0.05f : 0.0002f;
+        fonepole(input_envelope, magnitude, envelope_coefficient);
+        if(input_gate_open)
+        {
+          if(input_envelope < kGateCloseThreshold)
+            input_gate_open = false;
+        }
+        else if(input_envelope > kGateOpenThreshold)
+          input_gate_open = true;
+        const float gate_target = input_gate_open ? 1.0f : 0.0f;
+        fonepole(input_gate_gain, gate_target,
+                 input_gate_open ? 0.05f : 0.001f);
       }
-      else if(input_envelope > kGateOpenThreshold)
-        input_gate_open = true;
-
-      const float gate_target = input_gate_open ? 1.0f : 0.0f;
-      fonepole(input_gate_gain, gate_target, input_gate_open ? 0.05f : 0.001f);
-      const float gained_input = input * input_gain_smoothed.Tick() * input_gate_gain;
-#if HOTHOUSE_A2_DIAGNOSTIC
-      mono_in[i] = diagnostic_mode == 0 ? gained_input : 0.0f;
+#if HOTHOUSE_DIAGNOSTIC
+      mono_in[i] = diagnostic_mode == 0
+          ? gained_input
+              * (model_loaded ? input_gate_gain : 1.0f)
+          : 0.0f;
 #else
-      mono_in[i] = gained_input;
+      mono_in[i] = gained_input
+          * (model_loaded ? input_gate_gain : 1.0f)
+          ;
 #endif
     }
 
-    model.process_block_48(mono_in, mono_out);
+    if(model_loaded)
+      model_engine::ProcessBlock48(mono_in, mono_out);
+    else
+      for(size_t i = 0; i < size; ++i)
+        mono_out[i] = mono_in[i];
 
 #if HOTHOUSE_USE_IR
     const uint8_t ir_index = active_ir_index;
@@ -719,7 +929,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
       if(reverb_ready)
       {
         const float send = reverb_enabled ? dry : 0.0f;
-        reverb.Process(send, send, &wet_left, &wet_right);
+        reverb_rack->Process(reverb_position, send, &wet_left, &wet_right);
       }
 
       const float mix = reverb_mix_smoothed.Tick();
@@ -727,7 +937,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
       const float output = output_smoothed.Tick();
       float processed_left = (dry * dry_mix + wet_left * mix) * output;
       float processed_right = (dry * dry_mix + wet_right * mix) * output;
-#if HOTHOUSE_A2_DIAGNOSTIC
+#if HOTHOUSE_DIAGNOSTIC
       if(diagnostic_mode == 2)
       {
         processed_left = 0.0f;
@@ -754,26 +964,30 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
       {
         float discarded_left;
         float discarded_right;
-        reverb.Process(0.0f, 0.0f, &discarded_left, &discarded_right);
+        reverb_rack->Process(ReverbRack::Position::Off, 0.0f,
+                             &discarded_left, &discarded_right);
       }
       const float dry = in[0][i] * output_smoothed.Tick();
       out[0][i] = dry;
       out[1][i] = dry;
     }
   }
+
+  if(size != 0)
+    ApplyCaptureTransition(out, size);
 }
 
 void BenchmarkModel()
 {
-  if(!model_loaded)
+  if(!model_engine::IsLoaded())
     return;
 
   for(float& sample : mono_in)
     sample = 0.0f;
 
   DWT->CYCCNT = 0;
-  model.process_block_48(mono_in, mono_out);
-  UsbLog("A2-Lite benchmark cycles=%lu",
+  model_engine::ProcessBlock48(mono_in, mono_out);
+  UsbLog("%s benchmark cycles=%lu", model_engine::BackendId(),
          static_cast<unsigned long>(DWT->CYCCNT));
 }
 
@@ -782,6 +996,7 @@ void BenchmarkModel()
 int main()
 {
   hw.Init(true);
+  reverb_rack = new(reverb_rack_storage) ReverbRack();
   hw.SetAudioBlockSize(kAudioBlockSize);
   hw.SetAudioSampleRate(SaiHandle::Config::SampleRate::SAI_48KHZ);
 
@@ -794,7 +1009,7 @@ int main()
   hw.seed.usb_handle.Init(daisy::UsbHandle::FS_INTERNAL);
   hw.seed.usb_handle.SetReceiveCallback(CaptureUsbReceive,
                                         daisy::UsbHandle::FS_INTERNAL);
-  UsbLog("HothouseNAM A2-Lite boot");
+  UsbLog("HothouseNAM %s boot", model_engine::BackendId());
 
   hw.StartAdc();
   CheckStartupRecovery();
@@ -827,8 +1042,11 @@ int main()
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
   DWT->CYCCNT = 0;
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+  model_engine::Initialize(hw.AudioSampleRate(), kAudioBlockSize);
 
-  reverb_ready = reverb.Init(hw.AudioSampleRate()) == 0;
+  ReverbSlotConfig reverb_config = {};
+  reverb_config_store.Load(reverb_config);
+  reverb_ready = reverb_rack->Init(hw.AudioSampleRate(), reverb_config);
 #if HOTHOUSE_USE_IR
   for(size_t i = 0; i < embedded_ir_bank::kCount; ++i)
   {
@@ -842,21 +1060,14 @@ int main()
   UpdateReverbControls();
   reverb_mix_smoothed.current = reverb_mix_smoothed.target;
 
-  // Start dry so model initialization can never block audio or recovery.
+  const uint8_t startup_slot = CaptureSlotFromPanel();
+  if(startup_slot < 3)
+    SelectCaptureSlot(startup_slot, false);
+  capture_transition.Initialize(startup_slot);
+  // Empty capture slots bypass only NAM; the rest of the processing chain is
+  // still a useful standalone IR, EQ, and reverb processor.
+  effect_enabled = true;
   hw.StartAudio(AudioCallback);
-
-  CaptureInfo installed_capture;
-  const bool installed_loaded = capture_store.ReadInfo(installed_capture)
-      && LoadInstalledCapture(installed_capture, false);
-  if(!installed_loaded)
-  {
-    model_loaded = model.load_weights(embedded_a2_model::kWeights,
-                                      embedded_a2_model::kWeightCount);
-    effect_enabled = model_loaded;
-  }
-  UsbLog("A2-Lite model: %s (%s)",
-         model_loaded ? "ok" : "failed",
-         installed_loaded ? installed_capture.name : embedded_a2_model::kName);
   BenchmarkModel();
 
   uint32_t last_log_ms = System::GetNow();
@@ -874,16 +1085,31 @@ int main()
     mid_gain_smoothed.target = EqGainFromKnob(ActiveKnob(Hothouse::KNOB_5));
     treble_gain_smoothed.target = EqGainFromKnob(ActiveKnob(Hothouse::KNOB_6));
     UpdateReverbControls();
+    const uint8_t requested_capture_slot = CaptureSlotFromPanel();
+    capture_transition.ObserveSlot(requested_capture_slot, now_ms);
+    uint8_t settled_slot = CaptureTransitionController::NoSlot;
+    if(capture_transition.TakeSettledSlot(now_ms, settled_slot))
+    {
+      if(settled_slot != active_capture_slot)
+        SelectCaptureSlot(settled_slot, true);
+
+      input_envelope = 0.0f;
+      input_gate_gain = 0.0f;
+      input_gate_open = false;
+      bass_lowpass_state = 0.0f;
+      treble_lowpass_state = 0.0f;
+      capture_transition.BeginFadeIn();
+    }
 #if HOTHOUSE_USE_IR
     UpdateIrSelection();
 #endif
 
-    if(hw.switches[Hothouse::FOOTSWITCH_1].RisingEdge() && model_loaded)
+    if(hw.switches[Hothouse::FOOTSWITCH_1].RisingEdge())
       effect_enabled = !effect_enabled;
 
     ProcessPresetFootswitch();
 
-#if HOTHOUSE_A2_DIAGNOSTIC
+#if HOTHOUSE_DIAGNOSTIC
     diagnostic_mode = 0;
 #endif
 
@@ -892,10 +1118,11 @@ int main()
 
     if(now_ms - last_log_ms >= 1000U)
     {
-      UsbLog("A2-Lite cycles=%lu max=%lu model=%s",
+      UsbLog("%s cycles=%lu max=%lu model=%s",
+             model_engine::BackendId(),
              static_cast<unsigned long>(cb_process_cycles),
              static_cast<unsigned long>(cb_max_cycles),
-             model_loaded ? "ready" : "missing");
+             model_engine::IsLoaded() ? "ready" : "bypassed");
       last_log_ms = now_ms;
     }
 

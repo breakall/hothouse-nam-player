@@ -29,14 +29,31 @@ def inactive_film(value: Any) -> bool:
     return isinstance(value, dict) and value.get("active") is False
 
 
-def select_a2_lite(document: dict[str, Any]) -> tuple[dict[str, Any], int]:
+def a2_candidates(document: dict[str, Any]) -> list[tuple[dict[str, Any], int]]:
     if document.get("architecture") == "SlimmableContainer":
         submodels = document.get("config", {}).get("submodels", [])
         require(bool(submodels), "SlimmableContainer has no submodels")
-        model = submodels[0].get("model")
-        require(isinstance(model, dict), "Submodel 0 is missing its model")
-        return model, 0
-    return document, -1
+        candidates = []
+        for index, submodel in enumerate(submodels):
+            model = submodel.get("model") if isinstance(submodel, dict) else None
+            if isinstance(model, dict):
+                candidates.append((model, index))
+        require(bool(candidates), "SlimmableContainer has no readable submodels")
+        return candidates
+    return [(document, -1)]
+
+
+def select_a2_lite(document: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    failures = []
+    for model, index in a2_candidates(document):
+        try:
+            validate_model(model)
+            return model, index
+        except (ValueError, TypeError, KeyError) as error:
+            label = "model" if index < 0 else f"submodel {index}"
+            failures.append(f"{label}: {error}")
+    raise ValueError("No device-compatible A2-Lite model found ("
+                     + "; ".join(failures) + ")")
 
 
 def validate_model(model: dict[str, Any]) -> list[float]:

@@ -1,18 +1,43 @@
-MODEL ?=
 IR ?=
 IR_A ?= $(IR)
 IR_B ?=
 USE_IR ?= 0
 A2_DIAGNOSTIC ?= 0
 CAPTURE ?=
+SLOT ?= A
+HOST_CXX ?= c++
+HOST_TEST_BUILD ?= firmware/build/host-tests
+
+# The macOS ARM GNU Toolchain installer keeps versioned toolchains here.  Use
+# the newest installed copy automatically; callers may still override
+# GCC_PATH explicitly for another toolchain.
+ARM_GNU_TOOLCHAIN_BIN ?= $(patsubst %/,%,$(lastword $(sort $(dir $(wildcard /Applications/ArmGNUToolchain/*/arm-none-eabi/bin/arm-none-eabi-gcc)))))
+ifneq ($(ARM_GNU_TOOLCHAIN_BIN),)
+GCC_PATH ?= $(ARM_GNU_TOOLCHAIN_BIN)
+endif
+export GCC_PATH
 
 A2_RUNTIME = external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam/nam_a2_runtime.h
 
-.PHONY: a1 a2 clean-a1 clean-a2 setup-a2 require-model require-ir embed-ir-bank install-capture
+.PHONY: a1 a2 clean-a1 clean-a2 setup-a2 require-ir embed-ir-bank install-capture list-captures test
 
-require-model:
-	@test -n "$(MODEL)" || { echo "MODEL is required" >&2; exit 2; }
-	@test -f "$(MODEL)" || { echo "Model not found: $(MODEL)" >&2; exit 2; }
+test: $(HOST_TEST_BUILD)/capture_loader_test $(HOST_TEST_BUILD)/capture_transition_test $(HOST_TEST_BUILD)/reverb_engines_test
+	$(HOST_TEST_BUILD)/capture_loader_test
+	$(HOST_TEST_BUILD)/capture_transition_test
+	$(HOST_TEST_BUILD)/reverb_engines_test
+	python3 -m unittest discover -s tools/tests -p 'test_*.py'
+
+$(HOST_TEST_BUILD):
+	mkdir -p $@
+
+$(HOST_TEST_BUILD)/capture_loader_test: firmware/tests/capture_loader_test.cpp | $(HOST_TEST_BUILD)
+	$(HOST_CXX) -std=c++17 -O2 -Wall -Wextra -Werror $< -o $@
+
+$(HOST_TEST_BUILD)/capture_transition_test: firmware/tests/capture_transition_test.cpp firmware/capture_transition.h | $(HOST_TEST_BUILD)
+	$(HOST_CXX) -std=c++17 -O2 -Wall -Wextra -Werror $< -o $@
+
+$(HOST_TEST_BUILD)/reverb_engines_test: firmware/tests/reverb_engines_test.cpp | $(HOST_TEST_BUILD)
+	$(HOST_CXX) -std=c++17 -O2 -Wall -Wextra -Werror $< -o $@
 
 require-ir:
 	@test "$(USE_IR)" = "0" || test -n "$(IR_A)" || { echo "IR_A (or legacy IR) is required when USE_IR=1" >&2; exit 2; }
@@ -22,17 +47,17 @@ require-ir:
 embed-ir-bank: require-ir
 	@test "$(USE_IR)" = "0" || python3 tools/embed_ir_bank.py "$(IR_A)" $(if $(IR_B),"$(IR_B)") -o firmware/embedded_ir_bank.h
 
-a1: require-model require-ir embed-ir-bank
-	python3 tools/embed_model.py "$(MODEL)" -o firmware/embedded_model.h
+a1: require-ir embed-ir-bank
+	mkdir -p firmware/build
 	$(MAKE) -C firmware BUILD_DIR=build/a1 clean
 	$(MAKE) -C firmware BUILD_DIR=build/a1 USE_IR=$(USE_IR)
 
 setup-a2:
 	./tools/setup_a2_dependencies.sh
 
-a2: require-model require-ir embed-ir-bank
+a2: require-ir embed-ir-bank
 	@test -f "$(A2_RUNTIME)" || { echo "A2 runtime missing; run: make setup-a2" >&2; exit 2; }
-	python3 tools/embed_a2_model.py "$(MODEL)" -o firmware/embedded_a2_model.h
+	mkdir -p firmware/build
 	$(MAKE) -C firmware -f Makefile.a2 BUILD_DIR=build/a2 clean
 	$(MAKE) -C firmware -f Makefile.a2 BUILD_DIR=build/a2 DIAGNOSTIC=$(A2_DIAGNOSTIC) USE_IR=$(USE_IR)
 
@@ -44,4 +69,7 @@ clean-a2:
 
 install-capture:
 	@test -n "$(CAPTURE)" || { echo "CAPTURE is required" >&2; exit 2; }
-	python3 tools/install_capture.py "$(CAPTURE)"
+	python3 tools/install_capture.py "$(CAPTURE)" --slot "$(SLOT)"
+
+list-captures:
+	python3 tools/install_capture.py --list
