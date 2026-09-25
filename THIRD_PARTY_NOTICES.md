@@ -2,7 +2,7 @@
 
 ## DaisySeedProjects A2-Lite runtime
 
-The optional A2-Lite build downloads `nam_a2_runtime.h` from
+The firmware dependency setup downloads `nam_a2_runtime.h` from
 [bkshepherd/DaisySeedProjects](https://github.com/bkshepherd/DaisySeedProjects)
 at commit `ccae0f2305881d9f706557404ba22c0675c97bd7`.
 

@@ -1,4 +1,3 @@
-import copy
 import json
 import math
 import pathlib
@@ -10,31 +9,8 @@ import unittest
 TOOLS = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
 
-import embed_a2_model
+import a2_capture
 import install_capture
-
-
-def valid_a1():
-    return {
-        "architecture": "WaveNet",
-        "sample_rate": 48000,
-        "config": {"layers": [
-            {
-                "input_size": 1, "condition_size": 1, "head_size": 2,
-                "channels": 4, "kernel_size": 3,
-                "dilations": [1, 2, 4, 8, 16, 32, 64],
-                "gated": False, "head_bias": False, "activation": "ReLU",
-            },
-            {
-                "input_size": 4, "condition_size": 1, "head_size": 1,
-                "channels": 2, "kernel_size": 3,
-                "dilations": [128, 256, 512, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
-                "gated": False, "head_bias": True,
-                "activation": {"type": "ReLU"},
-            },
-        ]},
-        "weights": [0.0] * install_capture.A1_WEIGHT_COUNT,
-    }
 
 
 def valid_a2():
@@ -44,8 +20,8 @@ def valid_a2():
         "condition_size": 1,
         "channels": 3,
         "bottleneck": 3,
-        "kernel_sizes": embed_a2_model.KERNEL_SIZES,
-        "dilations": embed_a2_model.DILATIONS,
+        "kernel_sizes": a2_capture.KERNEL_SIZES,
+        "dilations": a2_capture.DILATIONS,
         "head": {"out_channels": 1, "kernel_size": 16, "bias": True},
         "layer1x1": {"active": True, "groups": 1},
         "head1x1": inactive,
@@ -68,36 +44,11 @@ def valid_a2():
         "architecture": "WaveNet",
         "sample_rate": 48000,
         "config": {"layers": [config]},
-        "weights": [0.0] * embed_a2_model.WEIGHT_COUNT,
+        "weights": [0.0] * a2_capture.WEIGHT_COUNT,
     }
 
 
 class CaptureValidationTests(unittest.TestCase):
-    def test_a1_accepts_exact_supported_topology(self):
-        install_capture.validate_a1_nano_relu(valid_a1())
-
-    def test_a1_rejects_invalid_topology_and_weights(self):
-        cases = []
-        tanh = valid_a1()
-        tanh["config"]["layers"][0]["activation"] = "Tanh"
-        cases.append(tanh)
-        wrong_rate = valid_a1()
-        wrong_rate["sample_rate"] = 44100
-        cases.append(wrong_rate)
-        wrong_weights = valid_a1()
-        wrong_weights["weights"].pop()
-        cases.append(wrong_weights)
-        nonfinite_weights = valid_a1()
-        nonfinite_weights["weights"][10] = math.inf
-        cases.append(nonfinite_weights)
-        invalid_rate = valid_a1()
-        invalid_rate["sample_rate"] = "not-a-rate"
-        cases.append(invalid_rate)
-        for document in cases:
-            with self.subTest(document=document):
-                with self.assertRaises(install_capture.ProtocolError):
-                    install_capture.validate_a1_nano_relu(document)
-
     def test_a2_selects_later_compatible_submodel(self):
         incompatible = valid_a2()
         incompatible["config"]["layers"][0]["channels"] = 8
@@ -108,15 +59,15 @@ class CaptureValidationTests(unittest.TestCase):
                 {"model": valid_a2()},
             ]},
         }
-        selected, index = embed_a2_model.select_a2_lite(container)
+        selected, index = a2_capture.select_a2_lite(container)
         self.assertEqual(index, 1)
-        self.assertEqual(len(embed_a2_model.validate_model(selected)), 1871)
+        self.assertEqual(len(a2_capture.validate_model(selected)), 1871)
 
     def test_a2_rejects_nonfinite_weights(self):
         model = valid_a2()
         model["weights"][10] = math.nan
         with self.assertRaisesRegex(ValueError, "finite"):
-            embed_a2_model.validate_model(model)
+            a2_capture.validate_model(model)
 
     def test_prepare_a2_packs_weights_and_uses_metadata_name(self):
         model = valid_a2()
@@ -125,41 +76,25 @@ class CaptureValidationTests(unittest.TestCase):
             path = pathlib.Path(directory) / "capture.nam"
             path.write_text(json.dumps(model), encoding="utf-8")
             capture_format, name, payload = install_capture.prepare_capture(
-                "a2_lite", path, None
+                "a2_lite", path
             )
         self.assertEqual(capture_format, "a2_weights_f32")
         self.assertEqual(name, "Test Amp")
         self.assertEqual(len(payload), 1871 * 4)
 
-    def test_combined_backend_selects_a2_capture_format(self):
+    def test_non_nam_input_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "capture.bin"
+            path.write_bytes(b"wrong")
+            with self.assertRaisesRegex(install_capture.ProtocolError, "accepts .nam"):
+                install_capture.prepare_capture("a2_lite", path)
+
+    def test_unknown_backend_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "capture.nam"
             path.write_text(json.dumps(valid_a2()), encoding="utf-8")
-            capture_format, _, payload = install_capture.prepare_capture(
-                "a1_a2", path, None
-            )
-        self.assertEqual(capture_format, "a2_weights_f32")
-        self.assertEqual(len(payload), 1871 * 4)
-
-    def test_combined_backend_accepts_a1_namb(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = pathlib.Path(directory) / "capture.namb"
-            path.write_bytes(b"BMAN" + b"\0" * 32)
-            capture_format, _, payload = install_capture.prepare_capture(
-                "a1_a2", path, None
-            )
-        self.assertEqual(capture_format, "a1_namb")
-        self.assertEqual(payload[:4], b"BMAN")
-
-    def test_namb_magic_and_size_are_checked(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = pathlib.Path(directory) / "capture.namb"
-            path.write_bytes(b"wrong")
-            with self.assertRaisesRegex(install_capture.ProtocolError, "valid NAMB"):
-                install_capture.prepare_a1(path, None)
-            path.write_bytes(b"BMAN" + b"\0" * install_capture.A1_LIMIT)
-            with self.assertRaisesRegex(install_capture.ProtocolError, "runtime limit"):
-                install_capture.prepare_a1(path, None)
+            with self.assertRaisesRegex(install_capture.ProtocolError, "Unsupported"):
+                install_capture.prepare_capture("unknown", path)
 
     def test_names_decode_strict_ascii(self):
         self.assertEqual(install_capture.decode_name_hex("54657374"), "Test")
@@ -198,23 +133,17 @@ class TransferTests(unittest.TestCase):
     def test_install_addresses_requested_slot_and_commits(self):
         with tempfile.TemporaryDirectory() as directory:
             port = FakePort()
-            install_capture.install(port, "a2_lite", self.write_model(directory), None, "C")
+            install_capture.install(port, "a2_lite", self.write_model(directory), "C")
         self.assertTrue(port.commands[0].startswith("HNAM BEGIN C a2_weights_f32"))
         self.assertEqual(port.commands[-1], "HNAM COMMIT")
         data_commands = [command for command in port.commands if command.startswith("HNAM DATA")]
         self.assertGreater(len(data_commands), 1)
 
-    def test_install_combined_backend_uses_capture_format(self):
-        with tempfile.TemporaryDirectory() as directory:
-            port = FakePort()
-            install_capture.install(port, "a1_a2", self.write_model(directory), None, "B")
-        self.assertTrue(port.commands[0].startswith("HNAM BEGIN B a2_weights_f32"))
-
     def test_install_cancels_failed_transfer(self):
         with tempfile.TemporaryDirectory() as directory:
             port = FakePort(fail_data=True)
             with self.assertRaises(install_capture.ProtocolError):
-                install_capture.install(port, "a2_lite", self.write_model(directory), None, "A")
+                install_capture.install(port, "a2_lite", self.write_model(directory), "A")
         self.assertEqual(port.commands[-1], "HNAM CANCEL")
 
 

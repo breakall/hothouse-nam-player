@@ -48,7 +48,6 @@ int main()
 {
   using namespace hothouse_nam;
 
-  assert(ParseCaptureFormat("a1_namb") == CaptureFormat::A1Namb);
   assert(ParseCaptureFormat("a2_weights_f32") == CaptureFormat::A2WeightsF32);
   assert(ParseCaptureFormat("other") == CaptureFormat::Unknown);
   uint32_t parsed = 0;
@@ -134,7 +133,7 @@ int main()
   assert(!store.ReadPayload(3, info, copy, sizeof(copy)));
   assert(!store.ReadPayload(info, copy, sizeof(copy) - 1));
 
-  assert(store.Begin(1, "Incomplete", CaptureFormat::A1Namb,
+  assert(store.Begin(1, "Incomplete", CaptureFormat::A2WeightsF32,
                      sizeof(payload), crc));
   assert(store.WriteChunk(0, payload, 2));
   assert(!store.Commit(info));
@@ -142,7 +141,7 @@ int main()
   assert(store.WriteChunk(2, payload + 2, 2));
   assert(store.Commit(info));
 
-  assert(store.Begin(1, "Bad CRC", CaptureFormat::A1Namb,
+  assert(store.Begin(1, "Bad CRC", CaptureFormat::A2WeightsF32,
                      sizeof(payload), crc ^ 1U));
   assert(store.WriteChunk(0, payload, sizeof(payload)));
   assert(!store.Commit(info));

@@ -15,38 +15,19 @@ endif
 endif
 LDFLAGS = -u _printf_float
 LDFLAGS += -T"$(abspath nam_a2_sections.lds)"
-MODEL ?=
 IR ?=
 USE_IR ?= 0
-EMBED_SCRIPT = ../tools/embed_model.py
 
 CPP_SOURCES = \
   hothouse_nam_host.cpp \
   nam_engine.cpp \
-  nam_engine_a1.cpp \
-  nam_engine_a2.cpp \
-  hothouse.cpp \
-  ../nam-pedal/nam-binary-loader/namb/get_dsp_namb.cpp \
-  ../nam-pedal/NeuralAmpModelerCore/NAM/activations.cpp \
-  ../nam-pedal/NeuralAmpModelerCore/NAM/conv1d.cpp \
-  ../nam-pedal/NeuralAmpModelerCore/NAM/dsp.cpp \
-  ../nam-pedal/NeuralAmpModelerCore/NAM/ring_buffer.cpp \
-  ../nam-pedal/NeuralAmpModelerCore/NAM/util.cpp \
-  ../nam-pedal/NeuralAmpModelerCore/NAM/wavenet.cpp
+  hothouse.cpp
 
 C_INCLUDES = \
   -I. \
-  -I../nam-pedal/NeuralAmpModelerCore \
-  -I../nam-pedal/NeuralAmpModelerCore/Dependencies/eigen \
-  -I../nam-pedal/NeuralAmpModelerCore/Dependencies/nlohmann \
-  -I../nam-pedal/nam-binary-loader \
   -I../external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam
 
 C_DEFS = \
-  -DNAM_SAMPLE_FLOAT \
-  -DNAM_USE_INLINE_GEMM \
-  -DNAM_DISABLE_JSON_REGISTRY \
-  -DNAM_NAMB_WAVENET_ONLY \
   -DHOTHOUSE_DIAGNOSTIC=0 \
   -DHOTHOUSE_SIZE_BUILD=0 \
   -DHOTHOUSE_USE_IR=$(USE_IR) \
@@ -60,7 +41,4 @@ include $(SYSTEM_FILES_DIR)/Makefile
 
 include ../HothouseExamples/src/Makefile
 
-CPPFLAGS += -fexceptions -ffast-math -funroll-loops -ftree-vectorize -fmove-loop-invariants
-
-embed-model:
-	python3 $(EMBED_SCRIPT) "$(MODEL)" -o embedded_model.h
+CPPFLAGS += -ffast-math -funroll-loops -ftree-vectorize -fmove-loop-invariants

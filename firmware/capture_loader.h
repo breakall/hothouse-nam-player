@@ -11,15 +11,13 @@ namespace hothouse_nam
 enum class CaptureFormat : uint8_t
 {
   Unknown = 0,
-  A1Namb = 1,
-  A2WeightsF32 = 2,
+  A2WeightsF32 = 1,
 };
 
 inline const char* CaptureFormatName(CaptureFormat format)
 {
   switch(format)
   {
-    case CaptureFormat::A1Namb: return "a1_namb";
     case CaptureFormat::A2WeightsF32: return "a2_weights_f32";
     default: return "unknown";
   }
@@ -27,8 +25,6 @@ inline const char* CaptureFormatName(CaptureFormat format)
 
 inline CaptureFormat ParseCaptureFormat(const char* text)
 {
-  if(text != nullptr && std::strcmp(text, "a1_namb") == 0)
-    return CaptureFormat::A1Namb;
   if(text != nullptr && std::strcmp(text, "a2_weights_f32") == 0)
     return CaptureFormat::A2WeightsF32;
   return CaptureFormat::Unknown;
@@ -151,8 +147,7 @@ class CaptureStore
   static constexpr uint8_t SlotCount = 3;
   static constexpr uint32_t HeaderAreaSize = 256U;
   // Three independently erasable 84 KiB slots consume 252 KiB, leaving one
-  // 4 KiB sector unused before the reverb configuration sector. Slot A starts
-  // at the legacy single-capture address, so existing installations migrate.
+  // 4 KiB sector unused before the reverb configuration sector.
   static constexpr uint32_t SlotSize = CaptureSlotSize;
   static constexpr uint32_t MaximumCaptureSize = SlotSize - HeaderAreaSize;
   static_assert(SlotSize > HeaderAreaSize,
@@ -307,7 +302,7 @@ class CaptureStore
 
  private:
   static constexpr uint32_t Magic = 0x4d414e48U; // "HNAM"
-  static constexpr uint16_t Version = 1;
+  static constexpr uint16_t Version = 2;
 
   static bool ValidName(const char* name)
   {
@@ -347,9 +342,7 @@ class CaptureStore
         && header.header_size == sizeof(CaptureHeader)
         && header.payload_size > 0
         && header.payload_size <= MaximumCaptureSize
-        && (header.format == static_cast<uint8_t>(CaptureFormat::A1Namb)
-            || header.format
-                == static_cast<uint8_t>(CaptureFormat::A2WeightsF32))
+        && header.format == static_cast<uint8_t>(CaptureFormat::A2WeightsF32)
         && header.name[0] != '\0'
         && header.name[sizeof(header.name) - 1U] == '\0'
         && HeaderCrc(header) == header.header_crc32;

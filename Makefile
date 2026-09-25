@@ -18,7 +18,7 @@ export GCC_PATH
 
 A2_RUNTIME = external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam/nam_a2_runtime.h
 
-.PHONY: firmware a1 a2 clean-firmware clean-a1 clean-a2 setup-a2 require-ir embed-ir-bank install-capture list-captures test
+.PHONY: firmware clean-firmware setup-a2 require-ir embed-ir-bank install-capture list-captures test
 
 test: $(HOST_TEST_BUILD)/capture_loader_test $(HOST_TEST_BUILD)/capture_transition_test $(HOST_TEST_BUILD)/reverb_engines_test
 	$(HOST_TEST_BUILD)/capture_loader_test
@@ -49,19 +49,14 @@ embed-ir-bank: require-ir
 firmware: require-ir embed-ir-bank
 	@test -f "$(A2_RUNTIME)" || { echo "A2 runtime missing; run: make setup-a2" >&2; exit 2; }
 	mkdir -p firmware/build
-	$(MAKE) -C firmware BUILD_DIR=build/combined clean
-	$(MAKE) -C firmware BUILD_DIR=build/combined USE_IR=$(USE_IR)
+	$(MAKE) -C firmware BUILD_DIR=build/firmware clean
+	$(MAKE) -C firmware BUILD_DIR=build/firmware USE_IR=$(USE_IR)
 
 setup-a2:
 	./tools/setup_a2_dependencies.sh
 
-a1 a2: firmware
-	@echo "A1 and A2 now use the same combined firmware image."
-
 clean-firmware:
-	$(MAKE) -C firmware BUILD_DIR=build/combined clean
-
-clean-a1 clean-a2: clean-firmware
+	$(MAKE) -C firmware BUILD_DIR=build/firmware clean
 
 install-capture:
 	@test -n "$(CAPTURE)" || { echo "CAPTURE is required" >&2; exit 2; }

@@ -6,26 +6,20 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-import math
 import os
 import pathlib
 import select
 import struct
-import subprocess
 import sys
-import tempfile
 import termios
 import time
 import tty
 import zlib
 
-from embed_a2_model import select_a2_lite, validate_model
+from a2_capture import select_a2_lite, validate_model
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHUNK_SIZE = 128
-A1_LIMIT = 64 * 1024
-A1_WEIGHT_COUNT = 842
 
 
 class ProtocolError(RuntimeError):
@@ -127,108 +121,6 @@ def decode_name_hex(value: str) -> str:
         raise ProtocolError("Pedal returned an invalid capture name") from error
 
 
-def find_converter(explicit: pathlib.Path | None) -> pathlib.Path:
-    choices = [
-        explicit,
-        ROOT / "build/nam-binary-loader/nam2namb",
-        ROOT / "nam-pedal/nam-binary-loader/build-release/nam2namb",
-    ]
-    for choice in choices:
-        if choice is not None and choice.is_file() and os.access(choice, os.X_OK):
-            return choice
-    raise ProtocolError(
-        "The A1 firmware needs NAMB data and nam2namb is not built. "
-        "Build it using the commands in README.md or pass --converter PATH."
-    )
-
-
-def validate_a1_nano_relu(document: dict) -> None:
-    if document.get("architecture") != "WaveNet":
-        raise ProtocolError("This is not an A1 WaveNet capture.")
-    try:
-        sample_rate = float(document.get("sample_rate", 0.0))
-    except (TypeError, ValueError) as error:
-        raise ProtocolError("A1 capture sample rate is invalid.") from error
-    if sample_rate != 48000.0:
-        raise ProtocolError("A1 captures must be trained at 48 kHz.")
-    layers = document.get("config", {}).get("layers")
-    if not isinstance(layers, list) or len(layers) != 2:
-        raise ProtocolError("This A1 capture is not the supported two-stack Nano topology.")
-    expected = [
-        {
-            "input_size": 1, "condition_size": 1, "head_size": 2,
-            "channels": 4, "kernel_size": 3,
-            "dilations": [1, 2, 4, 8, 16, 32, 64],
-            "gated": False, "head_bias": False,
-        },
-        {
-            "input_size": 4, "condition_size": 1, "head_size": 1,
-            "channels": 2, "kernel_size": 3,
-            "dilations": [128, 256, 512, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
-            "gated": False, "head_bias": True,
-        },
-    ]
-    for index, (layer, required) in enumerate(zip(layers, expected)):
-        if not isinstance(layer, dict) or any(layer.get(key) != value
-                                              for key, value in required.items()):
-            raise ProtocolError(
-                f"A1 layer stack {index} does not match the device-safe Nano topology."
-            )
-        activation = layer.get("activation")
-        activation_type = activation.get("type") if isinstance(activation, dict) else activation
-        if activation_type != "ReLU":
-            raise ProtocolError(
-                "This is a Nano capture, but it uses Tanh. The current A1 real-time "
-                "profile supports Nano-ReLU captures."
-            )
-    weights = document.get("weights")
-    if not isinstance(weights, list) or len(weights) != A1_WEIGHT_COUNT:
-        count = len(weights) if isinstance(weights, list) else 0
-        raise ProtocolError(
-            f"This A1 capture has {count:,} weights; the device-safe topology has "
-            f"{A1_WEIGHT_COUNT:,}."
-        )
-    try:
-        finite_weights = all(math.isfinite(float(weight)) for weight in weights)
-    except (TypeError, ValueError):
-        finite_weights = False
-    if not finite_weights:
-        raise ProtocolError("A1 capture weights must all be finite numbers.")
-
-
-def prepare_a1(path: pathlib.Path, converter: pathlib.Path | None) -> tuple[str, bytes]:
-    if path.suffix.lower() == ".namb":
-        payload = path.read_bytes()
-        name = capture_name(path)
-    elif path.suffix.lower() == ".nam":
-        try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise ProtocolError(f"Invalid NAM file: {error}") from error
-        if not isinstance(document, dict):
-            raise ProtocolError("Invalid NAM file: the root must be an object.")
-        validate_a1_nano_relu(document)
-        with tempfile.TemporaryDirectory(prefix="hothouse-nam-") as directory:
-            output = pathlib.Path(directory) / "capture.namb"
-            result = subprocess.run(
-                [str(find_converter(converter)), str(path), str(output)],
-                text=True,
-                capture_output=True,
-            )
-            if result.returncode != 0:
-                raise ProtocolError("nam2namb failed: " + (result.stderr.strip() or result.stdout.strip()))
-            payload = output.read_bytes()
-        name = capture_name(path, document)
-    else:
-        raise ProtocolError("A1 firmware accepts .nam or .namb files.")
-    # NAMB's 0x4e414d42 magic is stored little-endian on disk.
-    if not payload.startswith(b"BMAN"):
-        raise ProtocolError("The converted file is not valid NAMB data.")
-    if len(payload) > A1_LIMIT:
-        raise ProtocolError(f"The A1 binary is {len(payload):,} bytes; the runtime limit is {A1_LIMIT:,} bytes.")
-    return name, payload
-
-
 def prepare_a2(path: pathlib.Path) -> tuple[str, bytes]:
     if path.suffix.lower() != ".nam":
         raise ProtocolError("A2-Lite firmware accepts .nam files.")
@@ -243,46 +135,15 @@ def prepare_a2(path: pathlib.Path) -> tuple[str, bytes]:
     return capture_name(path, document), struct.pack(f"<{len(weights)}f", *weights)
 
 
-def prepare_capture(backend: str, path: pathlib.Path,
-                    converter: pathlib.Path | None) -> tuple[str, str, bytes]:
-    if backend == "a1_a2":
-        if path.suffix.lower() == ".namb":
-            name, payload = prepare_a1(path, converter)
-            return "a1_namb", name, payload
-        if path.suffix.lower() != ".nam":
-            raise ProtocolError("Combined firmware accepts .nam or .namb files.")
-        try:
-            name, payload = prepare_a2(path)
-            return "a2_weights_f32", name, payload
-        except ProtocolError as a2_error:
-            try:
-                name, payload = prepare_a1(path, converter)
-                return "a1_namb", name, payload
-            except ProtocolError as a1_error:
-                raise ProtocolError(
-                    "Capture is not compatible with this pedal. "
-                    f"A2-Lite check: {a2_error}. A1 Nano-ReLU check: {a1_error}"
-                ) from a1_error
-
-    adapters = {
-        "a1_nano_relu": (
-            "a1_namb", lambda: prepare_a1(path, converter),
-        ),
-        "a2_lite": (
-            "a2_weights_f32", lambda: prepare_a2(path),
-        ),
-    }
-    adapter = adapters.get(backend)
-    if adapter is None:
+def prepare_capture(backend: str, path: pathlib.Path) -> tuple[str, str, bytes]:
+    if backend != "a2_lite":
         raise ProtocolError(f"Unsupported firmware backend reported by pedal: {backend}")
-    capture_format, prepare = adapter
-    name, payload = prepare()
-    return capture_format, name, payload
+    name, payload = prepare_a2(path)
+    return "a2_weights_f32", name, payload
 
 
-def install(port: PedalPort, backend: str, path: pathlib.Path,
-            converter: pathlib.Path | None, slot: str) -> None:
-    capture_format, name, payload = prepare_capture(backend, path, converter)
+def install(port: PedalPort, backend: str, path: pathlib.Path, slot: str) -> None:
+    capture_format, name, payload = prepare_capture(backend, path)
 
     checksum = zlib.crc32(payload) & 0xFFFFFFFF
     encoded_name = name.encode("ascii").hex()
@@ -320,7 +181,7 @@ def main() -> int:
         description="Install a compatible NAM capture without entering DFU mode."
     )
     parser.add_argument("capture", nargs="?", type=pathlib.Path,
-                        help="A .nam or .namb capture")
+                        help="An A2 .nam capture")
     parser.add_argument("--slot", choices=("A", "B", "C"), default="A",
                         help="toggle slot to replace (default: A / UP)")
     actions = parser.add_mutually_exclusive_group()
@@ -329,12 +190,11 @@ def main() -> int:
     actions.add_argument("--delete-slot", choices=("A", "B", "C"),
                          help="erase a capture slot")
     parser.add_argument("--port", help="USB serial path; normally detected automatically")
-    parser.add_argument("--converter", type=pathlib.Path, help="Path to nam2namb for A1 .nam input")
     args = parser.parse_args()
     if args.capture is None and not args.list and args.delete_slot is None:
         parser.error("capture is required unless --list or --delete-slot is used")
     if args.capture is not None and (args.list or args.delete_slot is not None):
-        parser.error("capture cannot be combined with --list or --delete-slot")
+        parser.error("capture cannot be used with --list or --delete-slot")
     if args.capture is not None and not args.capture.is_file():
         parser.error(f"capture not found: {args.capture}")
 
@@ -357,8 +217,7 @@ def main() -> int:
         elif args.delete_slot is not None:
             print(" ".join(port.request(f"HNAM DELETE {args.delete_slot}", timeout=20.0)))
         else:
-            install(port, backend, args.capture.resolve(), args.converter,
-                    args.slot)
+            install(port, backend, args.capture.resolve(), args.slot)
     finally:
         port.close()
     return 0

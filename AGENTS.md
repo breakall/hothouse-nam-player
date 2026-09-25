@@ -37,10 +37,10 @@ Seed from this repository.
 5. Verify `Download done` and `File downloaded successfully`, then query the
    rebooted firmware over serial to confirm its reported backend.
 
-The combined A1/A2 command is:
+The production firmware command is:
 
 ```sh
-./tools/wait_and_flash_hothouse.sh firmware/build/combined/hothouse_nam.bin
+./tools/wait_and_flash_hothouse.sh firmware/build/firmware/hothouse_nam.bin
 ```
 
 Do not attribute a missed flash to the bootloader timeout without first running
