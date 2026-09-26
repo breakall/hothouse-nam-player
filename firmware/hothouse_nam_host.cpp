@@ -12,6 +12,7 @@
 #include "sys/dma.h"
 #include "capture_loader.h"
 #include "capture_transition.h"
+#include "level_match_config.h"
 #include "reverb_config.h"
 #include "reverb_rack.h"
 #include "nam_engine.h"
@@ -36,6 +37,8 @@ using hothouse_nam::CaptureInfo;
 using hothouse_nam::CaptureSlotState;
 using hothouse_nam::CaptureStore;
 using hothouse_nam::CaptureTransitionController;
+using hothouse_nam::LevelMatchConfig;
+using hothouse_nam::LevelMatchConfigStore;
 using hothouse_nam::Command;
 using hothouse_nam::CommandType;
 using hothouse_nam::ReverbConfigStore;
@@ -61,6 +64,7 @@ constexpr float kGateOpenThreshold = 0.001f;
 constexpr float kGateCloseThreshold = 0.0005f;
 constexpr float kBassLowpassCoefficient = 0.032195f;  // 250 Hz at 48 kHz
 constexpr float kTrebleLowpassCoefficient = 0.279675f; // 2.5 kHz at 48 kHz
+constexpr float kMaximumLevelMatchDb = 12.0f;
 constexpr uint32_t kPresetMagic = 0x48505253; // "HPRS"
 constexpr uint32_t kPresetVersion = 1;
 constexpr uint32_t kPresetQspiOffset = 0x007ff000;
@@ -164,6 +168,7 @@ class DaisyFlashBackend
 DaisyFlashBackend capture_flash(hw.seed.qspi);
 CaptureStore<DaisyFlashBackend> capture_store(capture_flash);
 ReverbConfigStore<DaisyFlashBackend> reverb_config_store(capture_flash);
+LevelMatchConfigStore<DaisyFlashBackend> level_match_config_store(capture_flash);
 ByteRing<1024> capture_usb_rx;
 char capture_line[320] = {};
 size_t capture_line_length = 0;
@@ -172,6 +177,7 @@ size_t capture_reply_length = 0;
 
 SmoothedFloat input_gain_smoothed = {1.0f, 1.0f};
 SmoothedFloat output_smoothed = {0.8f, 0.8f};
+SmoothedFloat level_match_smoothed = {1.0f, 1.0f};
 SmoothedFloat reverb_mix_smoothed = {0.0f, 0.0f};
 SmoothedFloat bass_gain_smoothed = {1.0f, 1.0f};
 SmoothedFloat mid_gain_smoothed = {1.0f, 1.0f};
@@ -202,6 +208,7 @@ volatile ReverbRack::Position reverb_position = ReverbRack::Position::Off;
 volatile uint32_t cb_process_cycles = 0;
 volatile uint32_t cb_max_cycles = 0;
 uint8_t active_capture_slot = 0xffU;
+LevelMatchConfig level_match_config = {};
 CaptureTransitionController capture_transition;
 bool preset_engaged = false;
 bool preset_press_active = false;
@@ -223,6 +230,34 @@ void AudioCallback(AudioHandle::InputBuffer in,
                    size_t size);
 void UsbLog(const char* format, ...);
 bool HandleReverbCommand(char* line);
+bool HandleLevelMatchCommand(char* line);
+
+float LevelMatchGainForSlot(uint8_t slot)
+{
+  if(!level_match_config.enabled || slot >= 3
+     || level_match_config.loudness_millidb[slot]
+         == hothouse_nam::kUnknownLoudnessMillidb)
+    return 1.0f;
+
+  int32_t reference = hothouse_nam::kUnknownLoudnessMillidb;
+  for(const int32_t loudness : level_match_config.loudness_millidb)
+  {
+    if(loudness != hothouse_nam::kUnknownLoudnessMillidb
+       && (reference == hothouse_nam::kUnknownLoudnessMillidb || loudness > reference))
+      reference = loudness;
+  }
+  if(reference == hothouse_nam::kUnknownLoudnessMillidb)
+    return 1.0f;
+
+  const float trim_db = std::fmin(kMaximumLevelMatchDb,
+      static_cast<float>(reference - level_match_config.loudness_millidb[slot]) / 1000.0f);
+  return std::pow(10.0f, trim_db / 20.0f);
+}
+
+void UpdateLevelMatchTarget()
+{
+  level_match_smoothed.target = LevelMatchGainForSlot(active_capture_slot);
+}
 
 void ApplyCaptureTransition(AudioHandle::OutputBuffer out, size_t size)
 {
@@ -294,6 +329,7 @@ bool SelectCaptureSlot(uint8_t slot, bool audio_running)
            model_engine::LastError());
   const bool loaded = metrics.loaded;
   active_capture_slot = slot;
+  UpdateLevelMatchTarget();
   capture_fault = state == CaptureSlotState::Invalid
       || (state == CaptureSlotState::Valid && !loaded);
   cb_max_cycles = 0;
@@ -360,6 +396,8 @@ void QueueCaptureSlot(uint8_t slot)
 void HandleCaptureCommand(char* line)
 {
   if(HandleReverbCommand(line))
+    return;
+  if(HandleLevelMatchCommand(line))
     return;
   Command command;
   if(!hothouse_nam::ParseCommand(line, command))
@@ -704,6 +742,116 @@ void UpdateReverbControls()
       = reverb_enabled ? ActiveKnob(Hothouse::KNOB_2) : 0.0f;
 }
 
+bool ParseSignedMillidb(const char* text, int32_t& value)
+{
+  if(text == nullptr || text[0] == '\0')
+    return false;
+  bool negative = false;
+  size_t index = 0;
+  if(text[index] == '-')
+  {
+    negative = true;
+    ++index;
+  }
+  if(text[index] == '\0')
+    return false;
+  int64_t parsed = 0;
+  for(; text[index] != '\0'; ++index)
+  {
+    if(text[index] < '0' || text[index] > '9')
+      return false;
+    parsed = parsed * 10 + (text[index] - '0');
+    if(parsed > 2147483648LL)
+      return false;
+  }
+  if((negative && parsed <= 2147483648LL)
+     || (!negative && parsed <= 2147483647LL))
+  {
+    value = static_cast<int32_t>(negative ? -parsed : parsed);
+    return true;
+  }
+  return false;
+}
+
+bool SaveLevelMatchConfig()
+{
+  hw.StopAudio();
+  const bool saved = level_match_config_store.Save(level_match_config);
+  hw.StartAudio(AudioCallback);
+  return saved;
+}
+
+bool HandleLevelMatchCommand(char* line)
+{
+  if(std::strncmp(line, "HNAM LEVEL ", 11) != 0)
+    return false;
+  char* save = nullptr;
+  char* prefix = ::strtok_r(line, " ", &save);
+  char* noun = ::strtok_r(nullptr, " ", &save);
+  char* verb = ::strtok_r(nullptr, " ", &save);
+  if(prefix == nullptr || noun == nullptr || verb == nullptr
+     || std::strcmp(prefix, "HNAM") != 0 || std::strcmp(noun, "LEVEL") != 0)
+    return false;
+
+  if(std::strcmp(verb, "INFO") == 0 && ::strtok_r(nullptr, " ", &save) == nullptr)
+  {
+    const auto display_loudness = [](int32_t loudness) {
+      return loudness == hothouse_nam::kUnknownLoudnessMillidb ? 0 : loudness;
+    };
+    QueueCaptureReply("HNAM OK LEVEL INFO enabled=%u A=%ld B=%ld C=%ld",
+                      level_match_config.enabled ? 1U : 0U,
+                      static_cast<long>(display_loudness(level_match_config.loudness_millidb[0])),
+                      static_cast<long>(display_loudness(level_match_config.loudness_millidb[1])),
+                      static_cast<long>(display_loudness(level_match_config.loudness_millidb[2])));
+    return true;
+  }
+
+  if(std::strcmp(verb, "ENABLE") == 0)
+  {
+    char* enabled = ::strtok_r(nullptr, " ", &save);
+    if(enabled == nullptr || ::strtok_r(nullptr, " ", &save) != nullptr
+       || (std::strcmp(enabled, "0") != 0 && std::strcmp(enabled, "1") != 0))
+    {
+      QueueCaptureReply("HNAM ERR level_enable_syntax");
+      return true;
+    }
+    level_match_config.enabled = enabled[0] == '1';
+    UpdateLevelMatchTarget();
+    if(!SaveLevelMatchConfig())
+      QueueCaptureReply("HNAM ERR level_save_failed");
+    else
+      QueueCaptureReply("HNAM OK LEVEL ENABLE enabled=%u",
+                        level_match_config.enabled ? 1U : 0U);
+    return true;
+  }
+
+  if(std::strcmp(verb, "SLOT") == 0)
+  {
+    char* slot_text = ::strtok_r(nullptr, " ", &save);
+    char* loudness_text = ::strtok_r(nullptr, " ", &save);
+    const int slot = hothouse_nam::ParseCaptureSlot(slot_text);
+    int32_t loudness = 0;
+    if(slot < 0 || loudness_text == nullptr || ::strtok_r(nullptr, " ", &save) != nullptr
+       || !ParseSignedMillidb(loudness_text, loudness)
+       || !hothouse_nam::ValidLoudnessMillidb(loudness))
+    {
+      QueueCaptureReply("HNAM ERR level_slot_syntax");
+      return true;
+    }
+    level_match_config.loudness_millidb[slot] = loudness;
+    UpdateLevelMatchTarget();
+    if(!SaveLevelMatchConfig())
+      QueueCaptureReply("HNAM ERR level_save_failed");
+    else
+      QueueCaptureReply("HNAM OK LEVEL SLOT %c loudness=%ld", 'A' + slot,
+                        static_cast<long>(loudness));
+    return true;
+  }
+
+  QueueCaptureReply("HNAM ERR level_command");
+  return true;
+}
+
 bool HandleReverbCommand(char* line)
 {
   if(std::strncmp(line, "HNAM REVERB ", 12) != 0)
@@ -903,6 +1051,10 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
       for(size_t i = 0; i < size; ++i)
         mono_out[i] = mono_in[i];
 
+    if(model_loaded)
+      for(size_t i = 0; i < size; ++i)
+        mono_out[i] *= level_match_smoothed.Tick();
+
 #if HOTHOUSE_USE_IR
     const uint8_t ir_index = active_ir_index;
     if(ir_index == kIrOff)
@@ -1042,6 +1194,7 @@ int main()
   ReverbSlotConfig reverb_config = {};
   reverb_config_store.Load(reverb_config);
   reverb_ready = reverb_rack->Init(hw.AudioSampleRate(), reverb_config);
+  level_match_config_store.Load(level_match_config);
 #if HOTHOUSE_USE_IR
   for(size_t i = 0; i < embedded_ir_bank::kCount; ++i)
   {
@@ -1058,6 +1211,9 @@ int main()
   const uint8_t startup_slot = CaptureSlotFromPanel();
   if(startup_slot < 3)
     SelectCaptureSlot(startup_slot, false);
+  else
+    UpdateLevelMatchTarget();
+  level_match_smoothed.current = level_match_smoothed.target;
   capture_transition.Initialize(startup_slot);
   // Empty capture slots bypass only NAM; the rest of the processing chain is
   // still a useful standalone IR, EQ, and reverb processor.
