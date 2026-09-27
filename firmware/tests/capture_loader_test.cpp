@@ -1,10 +1,14 @@
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include "../capture_loader.h"
+#include "../level_match_config.h"
+#include "../nam_engine.h"
 #include "../reverb_config.h"
 
 struct MemoryFlash
@@ -54,6 +58,13 @@ int main()
   assert(ParseUnsigned("4294967295", parsed, 10) && parsed == 0xffffffffU);
   assert(!ParseUnsigned("4294967296", parsed, 10));
   assert(!ParseUnsigned("12x", parsed, 10));
+
+  const float finite_weights[] = {0.0f, -1.0f, 3.4028234e38f};
+  assert(model_engine::WeightsAreFinite(finite_weights, 3));
+  const float nonfinite_weights[] = {
+      0.0f, std::numeric_limits<float>::infinity(),
+      std::numeric_limits<float>::quiet_NaN()};
+  assert(!model_engine::WeightsAreFinite(nonfinite_weights, 3));
 
   ByteRing<4> ring;
   const uint8_t ring_input[] = {'a', 'b', 'c', 'd'};
@@ -180,5 +191,21 @@ int main()
   assert(ParseReverbId("fdn16") == ReverbId::Fdn16);
   assert(ParseReverbId("not-a-reverb") == ReverbId::Invalid);
   assert(!ValidReverbSlotConfig({ReverbId::Dattorro, ReverbId::Dattorro}));
+
+  LevelMatchConfig level_config;
+  level_config.enabled = true;
+  level_config.loudness_millidb[0] = -6000;
+  level_config.loudness_millidb[1] = -12000;
+  level_config.loudness_millidb[2] = 0;
+  const bool loaded_slots[] = {true, true, false};
+  assert(std::fabs(LevelMatchGainForSlot(level_config, 0, loaded_slots) - 1.0f)
+         < 0.0001f);
+  assert(std::fabs(LevelMatchGainForSlot(level_config, 1, loaded_slots) - 1.995262f)
+         < 0.0001f);
+  assert(ClearSlotLoudness(level_config, 0));
+  assert(level_config.loudness_millidb[0] == kUnknownLoudnessMillidb);
+  assert(std::fabs(LevelMatchGainForSlot(level_config, 1, loaded_slots) - 1.0f)
+         < 0.0001f);
+  assert(!ClearSlotLoudness(level_config, 3));
   return 0;
 }

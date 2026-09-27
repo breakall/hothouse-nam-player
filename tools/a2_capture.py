@@ -14,6 +14,7 @@ DILATIONS = [
     1, 3, 7, 17, 41, 101, 239,
 ]
 WEIGHT_COUNT = 1871
+FLOAT32_MAX = 3.4028234663852886e38
 
 
 def require(condition: bool, message: str) -> None:
@@ -118,7 +119,11 @@ def validate_model(model: dict[str, Any]) -> list[float]:
     weights = model.get("weights")
     require(isinstance(weights, list) and len(weights) == WEIGHT_COUNT,
             f"Expected exactly {WEIGHT_COUNT} A2-Lite weights")
+    require(all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in weights),
+            "Weights must all be numbers")
     values = [float(value) for value in weights]
-    require(all(math.isfinite(value) for value in values),
-            "Weights must all be finite")
+    require(all(math.isfinite(value) and abs(value) <= FLOAT32_MAX
+                for value in values),
+            "Weights must all be finite 32-bit floats")
     return values

@@ -13,8 +13,8 @@ HOST_TEST_BUILD ?= firmware/build/host-tests
 ARM_GNU_TOOLCHAIN_BIN ?= $(patsubst %/,%,$(lastword $(sort $(dir $(wildcard /Applications/ArmGNUToolchain/*/arm-none-eabi/bin/arm-none-eabi-gcc)))))
 ifneq ($(ARM_GNU_TOOLCHAIN_BIN),)
 GCC_PATH ?= $(ARM_GNU_TOOLCHAIN_BIN)
-endif
 export GCC_PATH
+endif
 
 A2_RUNTIME = external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam/nam_a2_runtime.h
 

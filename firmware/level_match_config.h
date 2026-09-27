@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 
 #include "capture_loader.h"
 
@@ -25,6 +26,38 @@ inline bool ValidLoudnessMillidb(int32_t loudness)
   // NAM loudness is normally negative and well inside this deliberately broad
   // range. Keeping bogus metadata out prevents unexpectedly large boosts.
   return loudness >= -120000 && loudness <= 24000;
+}
+
+inline bool ClearSlotLoudness(LevelMatchConfig& config, uint8_t slot)
+{
+  if(slot >= 3)
+    return false;
+  config.loudness_millidb[slot] = kUnknownLoudnessMillidb;
+  return true;
+}
+
+inline float LevelMatchGainForSlot(const LevelMatchConfig& config, uint8_t slot,
+                                   const bool valid_slots[3],
+                                   float maximum_boost_db = 12.0f)
+{
+  if(!config.enabled || slot >= 3 || valid_slots == nullptr || !valid_slots[slot]
+     || config.loudness_millidb[slot] == kUnknownLoudnessMillidb)
+    return 1.0f;
+
+  int32_t reference = kUnknownLoudnessMillidb;
+  for(size_t i = 0; i < 3; ++i)
+  {
+    const int32_t loudness = config.loudness_millidb[i];
+    if(valid_slots[i] && loudness != kUnknownLoudnessMillidb
+       && (reference == kUnknownLoudnessMillidb || loudness > reference))
+      reference = loudness;
+  }
+  if(reference == kUnknownLoudnessMillidb)
+    return 1.0f;
+
+  const float trim_db = std::fmin(maximum_boost_db,
+      static_cast<float>(reference - config.loudness_millidb[slot]) / 1000.0f);
+  return std::pow(10.0f, trim_db / 20.0f);
 }
 
 // The final 4 KiB of the capture region is unused by the three 84 KiB capture

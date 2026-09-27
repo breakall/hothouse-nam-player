@@ -1,3 +1,4 @@
 [submodule "HothouseExamples"]
 	path = HothouseExamples
 	url = https://github.com/clevelandmusicco/HothouseExamples
+	ignore = dirty

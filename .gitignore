@@ -3,7 +3,10 @@ build/
 firmware/build/
 firmware/embedded_ir.h
 firmware/embedded_ir_bank.h
+firmware/embedded_a2_model.h
+firmware/embedded_model.h
 external/
+nam-pedal/
 __pycache__/
 output/
 tmp/

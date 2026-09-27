@@ -43,12 +43,24 @@ follows its physical position because changing it may reload a model.
 
 ## Set up and build
 
+Requirements:
+
+- Git, Python 3, and GNU Make
+- The [Arm GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)
+  for the `arm-none-eabi` target, including its Newlib headers and libraries
+- [`dfu-util`](https://dfu-util.sourceforge.net/) for flashing (`brew install
+  dfu-util` on macOS)
+
 ```sh
-git clone --recursive https://github.com/breakall/hothouse-nam-pedal hothouse-nam-player
+git clone --recursive https://github.com/breakall/hothouse-nam-player.git
 cd hothouse-nam-player
 make setup-a2
 make firmware USE_IR=0
 ```
+
+The build automatically discovers Arm's macOS installer under
+`/Applications/ArmGNUToolchain`. On another platform or with a custom
+installation, set `GCC_PATH` to the toolchain's `bin` directory.
 
 The firmware is written to `firmware/build/firmware/hothouse_nam.bin`.
 
@@ -66,7 +78,13 @@ cabinet stage for full-rig captures.
 
 ## Install captures over USB
 
-The pedal stores up to three captures through its normal USB connection:
+The browser-based [Hothouse NAM Editor](https://github.com/breakall/hothouse-nam-pedal-editor)
+is a graphical alternative to the command-line tools below. In desktop Chrome
+or Edge, it connects directly to the pedal over Web Serial to install, replace,
+or delete captures and configure the UP and DOWN reverb assignments.
+
+For command-line use, the pedal stores up to three captures through its normal
+USB connection:
 
 ```sh
 python3 tools/install_capture.py "/absolute/path/to/capture-a.nam" --slot A

@@ -69,6 +69,14 @@ class CaptureValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "finite"):
             a2_capture.validate_model(model)
 
+    def test_a2_rejects_non_numeric_and_float32_overflow_weights(self):
+        for value in (None, True, "1.0", 1e100):
+            model = valid_a2()
+            model["weights"][10] = value
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "numbers|32-bit"):
+                    a2_capture.validate_model(model)
+
     def test_prepare_a2_packs_weights_and_uses_metadata_name(self):
         model = valid_a2()
         model["metadata"] = {"name": " Test   Amp "}

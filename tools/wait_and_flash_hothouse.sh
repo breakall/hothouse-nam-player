@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-firmware=${1:-firmware/build/hothouse_nam.bin}
+firmware=${1:-firmware/build/firmware/hothouse_nam.bin}
 flash_address=${2:-0x90040000}
 if [ ! -f "$firmware" ]; then
     echo "Firmware not found: $firmware" >&2

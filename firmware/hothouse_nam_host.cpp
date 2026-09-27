@@ -64,7 +64,6 @@ constexpr float kGateOpenThreshold = 0.001f;
 constexpr float kGateCloseThreshold = 0.0005f;
 constexpr float kBassLowpassCoefficient = 0.032195f;  // 250 Hz at 48 kHz
 constexpr float kTrebleLowpassCoefficient = 0.279675f; // 2.5 kHz at 48 kHz
-constexpr float kMaximumLevelMatchDb = 12.0f;
 constexpr uint32_t kPresetMagic = 0x48505253; // "HPRS"
 constexpr uint32_t kPresetVersion = 1;
 constexpr uint32_t kPresetQspiOffset = 0x007ff000;
@@ -231,27 +230,29 @@ void AudioCallback(AudioHandle::InputBuffer in,
 void UsbLog(const char* format, ...);
 bool HandleReverbCommand(char* line);
 bool HandleLevelMatchCommand(char* line);
+bool SaveLevelMatchConfig();
+
+bool StoredCaptureIsCompatible(uint8_t slot, CaptureInfo* output = nullptr)
+{
+  CaptureInfo info;
+  const CaptureSlotState state = capture_store.Inspect(slot, &info);
+  const bool compatible = state == CaptureSlotState::Valid
+      && model_engine::AcceptsPayload(info.format, info.size)
+      && capture_store.ReadPayload(slot, info, model_engine::PayloadBuffer(),
+                                   model_engine::PayloadCapacity())
+      && model_engine::PayloadIsValid(info.format, info.size);
+  if(compatible && output != nullptr)
+    *output = info;
+  return compatible;
+}
 
 float LevelMatchGainForSlot(uint8_t slot)
 {
-  if(!level_match_config.enabled || slot >= 3
-     || level_match_config.loudness_millidb[slot]
-         == hothouse_nam::kUnknownLoudnessMillidb)
-    return 1.0f;
-
-  int32_t reference = hothouse_nam::kUnknownLoudnessMillidb;
-  for(const int32_t loudness : level_match_config.loudness_millidb)
-  {
-    if(loudness != hothouse_nam::kUnknownLoudnessMillidb
-       && (reference == hothouse_nam::kUnknownLoudnessMillidb || loudness > reference))
-      reference = loudness;
-  }
-  if(reference == hothouse_nam::kUnknownLoudnessMillidb)
-    return 1.0f;
-
-  const float trim_db = std::fmin(kMaximumLevelMatchDb,
-      static_cast<float>(reference - level_match_config.loudness_millidb[slot]) / 1000.0f);
-  return std::pow(10.0f, trim_db / 20.0f);
+  bool valid_slots[3] = {};
+  for(uint8_t candidate = 0; candidate < 3; ++candidate)
+    valid_slots[candidate] = StoredCaptureIsCompatible(candidate);
+  return hothouse_nam::LevelMatchGainForSlot(level_match_config, slot,
+                                             valid_slots);
 }
 
 void UpdateLevelMatchTarget()
@@ -314,10 +315,7 @@ bool SelectCaptureSlot(uint8_t slot, bool audio_running)
 
   CaptureInfo info;
   const CaptureSlotState state = capture_store.Inspect(slot, &info);
-  const bool payload_ready = state == CaptureSlotState::Valid
-      && model_engine::AcceptsPayload(info.format, info.size)
-      && capture_store.ReadPayload(slot, info, model_engine::PayloadBuffer(),
-                                   model_engine::PayloadCapacity());
+  const bool payload_ready = StoredCaptureIsCompatible(slot, &info);
   if(audio_running)
     hw.StopAudio();
   model_engine::Clear();
@@ -356,8 +354,7 @@ void QueueCaptureSlots()
   {
     CaptureInfo info;
     const CaptureSlotState state = capture_store.Inspect(slot, &info);
-    const bool compatible = state == CaptureSlotState::Valid
-        && model_engine::AcceptsPayload(info.format, info.size);
+    const bool compatible = StoredCaptureIsCompatible(slot);
     states[slot] = compatible ? "installed"
         : (state == CaptureSlotState::Empty ? "empty" : "invalid");
   }
@@ -370,8 +367,7 @@ void QueueCaptureSlot(uint8_t slot)
 {
   CaptureInfo info;
   const CaptureSlotState state = capture_store.Inspect(slot, &info);
-  const bool compatible = state == CaptureSlotState::Valid
-      && model_engine::AcceptsPayload(info.format, info.size);
+  const bool compatible = StoredCaptureIsCompatible(slot, &info);
   if(!compatible)
   {
     QueueCaptureReply("HNAM OK SLOT %c %s unknown 0 00000000 -", 'A' + slot,
@@ -411,8 +407,8 @@ void HandleCaptureCommand(char* line)
     const CaptureSlotState state = active_capture_slot < 3
         ? capture_store.Inspect(active_capture_slot, &info)
         : CaptureSlotState::Empty;
-    if(state == CaptureSlotState::Valid
-       && model_engine::AcceptsPayload(info.format, info.size))
+    if(active_capture_slot < 3
+       && StoredCaptureIsCompatible(active_capture_slot, &info))
       QueueCaptureReply("HNAM OK INFO %s installed %lu %08lx",
                         model_engine::BackendId(),
                         static_cast<unsigned long>(info.size),
@@ -435,9 +431,22 @@ void HandleCaptureCommand(char* line)
       QueueCaptureReply("HNAM ERR begin_failed");
     else
     {
+      const int32_t previous_loudness
+          = level_match_config.loudness_millidb[command.slot];
+      hothouse_nam::ClearSlotLoudness(level_match_config, command.slot);
+      UpdateLevelMatchTarget();
+      const bool level_saved
+          = previous_loudness == hothouse_nam::kUnknownLoudnessMillidb
+          || SaveLevelMatchConfig();
       if(command.slot == active_capture_slot)
         SelectCaptureSlot(active_capture_slot, true);
-      QueueCaptureReply("HNAM OK BEGIN 0");
+      if(!level_saved)
+      {
+        capture_store.Cancel();
+        QueueCaptureReply("HNAM ERR level_save_failed");
+      }
+      else
+        QueueCaptureReply("HNAM OK BEGIN 0");
     }
   }
   else if(command.type == CommandType::Data)
@@ -457,6 +466,13 @@ void HandleCaptureCommand(char* line)
       QueueCaptureReply("HNAM ERR commit_%s",
                         hothouse_nam::CaptureCommitStatusName(
                             capture_store.LastCommitStatus()));
+    else if(!capture_store.ReadPayload(slot, info, model_engine::PayloadBuffer(),
+                                       model_engine::PayloadCapacity())
+            || !model_engine::PayloadIsValid(info.format, info.size))
+    {
+      capture_store.EraseSlot(slot);
+      QueueCaptureReply("HNAM ERR non_finite_weights");
+    }
     else if(slot == active_capture_slot && !SelectCaptureSlot(slot, true))
     {
       if(capture_fault)
@@ -480,9 +496,19 @@ void HandleCaptureCommand(char* line)
       QueueCaptureReply("HNAM ERR delete_failed");
     else
     {
+      const int32_t previous_loudness
+          = level_match_config.loudness_millidb[command.slot];
+      hothouse_nam::ClearSlotLoudness(level_match_config, command.slot);
+      UpdateLevelMatchTarget();
+      const bool level_saved
+          = previous_loudness == hothouse_nam::kUnknownLoudnessMillidb
+          || SaveLevelMatchConfig();
       if(command.slot == active_capture_slot)
         SelectCaptureSlot(command.slot, true);
-      QueueCaptureReply("HNAM OK DELETE %c", 'A' + command.slot);
+      if(!level_saved)
+        QueueCaptureReply("HNAM ERR level_save_failed");
+      else
+        QueueCaptureReply("HNAM OK DELETE %c", 'A' + command.slot);
     }
   }
 }

@@ -18,6 +18,7 @@ constexpr size_t kPayloadSize = nam_a2_daisy::kA2WeightCount * sizeof(float);
 DSY_SDRAM_BSS alignas(32) uint8_t payload[kPayloadSize];
 NAM_A2_STATE_DATA nam_a2_daisy::A2Player model;
 bool loaded = false;
+const char* last_error = "";
 }
 
 const char* BackendId()
@@ -40,6 +41,13 @@ bool AcceptsPayload(CaptureFormat format, size_t size)
   return format == CaptureFormat::A2WeightsF32 && size == sizeof(payload);
 }
 
+bool PayloadIsValid(CaptureFormat format, size_t size)
+{
+  return AcceptsPayload(format, size)
+      && WeightsAreFinite(reinterpret_cast<const float*>(payload),
+                          nam_a2_daisy::kA2WeightCount);
+}
+
 uint8_t* PayloadBuffer()
 {
   return payload;
@@ -52,6 +60,7 @@ void Initialize(double, size_t)
 void Clear()
 {
   loaded = false;
+  last_error = "";
 }
 
 LoadMetrics Load(CaptureFormat format, size_t payload_size)
@@ -60,12 +69,20 @@ LoadMetrics Load(CaptureFormat format, size_t payload_size)
   if(!AcceptsPayload(format, payload_size))
   {
     Clear();
+    last_error = "incompatible payload";
+    return metrics;
+  }
+  if(!PayloadIsValid(format, payload_size))
+  {
+    Clear();
+    last_error = "capture contains non-finite weights";
     return metrics;
   }
 
   const uint32_t load_start = DWT->CYCCNT;
   loaded = model.load_weights(reinterpret_cast<const float*>(payload),
                               nam_a2_daisy::kA2WeightCount);
+  last_error = loaded ? "" : "runtime rejected capture weights";
   metrics.construct_cycles = DWT->CYCCNT - load_start;
   metrics.loaded = loaded;
   return metrics;
@@ -73,7 +90,7 @@ LoadMetrics Load(CaptureFormat format, size_t payload_size)
 
 const char* LastError()
 {
-  return "";
+  return last_error;
 }
 
 bool IsLoaded()
