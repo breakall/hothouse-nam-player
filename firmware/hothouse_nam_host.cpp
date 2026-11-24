@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -230,6 +231,7 @@ void AudioCallback(AudioHandle::InputBuffer in,
 void UsbLog(const char* format, ...);
 bool HandleReverbCommand(char* line);
 bool HandleLevelMatchCommand(char* line);
+bool HandleBenchmarkCommand(const char* line);
 bool SaveLevelMatchConfig();
 
 bool StoredCaptureIsCompatible(uint8_t slot, CaptureInfo* output = nullptr)
@@ -391,6 +393,8 @@ void QueueCaptureSlot(uint8_t slot)
 
 void HandleCaptureCommand(char* line)
 {
+  if(HandleBenchmarkCommand(line))
+    return;
   if(HandleReverbCommand(line))
     return;
   if(HandleLevelMatchCommand(line))
@@ -1150,18 +1154,92 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
     ApplyCaptureTransition(out, size);
 }
 
-void BenchmarkModel()
+bool HandleBenchmarkCommand(const char* line)
 {
-  if(!model_engine::IsLoaded())
-    return;
+#if HOTHOUSE_ENGINE_TONE3000
+  constexpr const char* implementation = "tone3000";
+#else
+  constexpr const char* implementation = "legacy";
+#endif
+  if(std::strcmp(line, "HNAM ENGINE") == 0)
+  {
+    QueueCaptureReply("HNAM OK ENGINE %s", implementation);
+    return true;
+  }
+  if(std::strcmp(line, "HNAM BENCH") != 0)
+    return false;
+  CaptureInfo info;
+  if(active_capture_slot >= 3 || !model_engine::IsLoaded()
+     || capture_store.Inspect(active_capture_slot, &info) != CaptureSlotState::Valid)
+  {
+    QueueCaptureReply("HNAM ERR benchmark_requires_loaded_capture");
+    return true;
+  }
 
-  for(float& sample : mono_in)
-    sample = 0.0f;
-
-  DWT->CYCCNT = 0;
-  model_engine::ProcessBlock48(mono_in, mono_out);
-  UsbLog("%s benchmark cycles=%lu", model_engine::ActiveBackendId(),
-         static_cast<unsigned long>(DWT->CYCCNT));
+  // Engine-only, warm-cache benchmark. Audio is stopped so the model is never
+  // entered concurrently. All builds use the same xorshift32 stimulus, loaded
+  // capture, warmup, block count, clock and timing boundaries. Nothing is saved.
+  hw.StopAudio();
+  if(!SelectCaptureSlot(active_capture_slot, false))
+  {
+    QueueCaptureReply("HNAM ERR benchmark_reload_failed");
+    hw.StartAudio(AudioCallback);
+    return true;
+  }
+  constexpr size_t warmup = 32, blocks = 256;
+  uint32_t cycles[blocks];
+  uint32_t rng = 0x48534e41U;
+  uint32_t checksum = 2166136261U;
+  uint64_t total = 0;
+  __set_FPSCR(__get_FPSCR() | (1U << 24) | (1U << 25));
+  for(size_t block = 0; block < warmup + blocks; ++block)
+  {
+    for(float& sample : mono_in)
+    {
+      rng ^= rng << 13;
+      rng ^= rng >> 17;
+      rng ^= rng << 5;
+      sample = (static_cast<float>(rng & 0xffffU) / 65535.0f - 0.5f) * 0.2f;
+    }
+    const uint32_t previous_primask = __get_PRIMASK();
+    __disable_irq();
+    __DSB();
+    __ISB();
+    const uint32_t start = DWT->CYCCNT;
+    model_engine::ProcessBlock48(mono_in, mono_out);
+    __DSB();
+    const uint32_t elapsed = DWT->CYCCNT - start;
+    __set_PRIMASK(previous_primask);
+    if(block >= warmup)
+    {
+      cycles[block - warmup] = elapsed;
+      total += elapsed;
+      for(const float sample : mono_out)
+      {
+        uint32_t bits;
+        std::memcpy(&bits, &sample, sizeof(bits));
+        checksum = (checksum ^ bits) * 16777619U;
+      }
+    }
+  }
+  std::sort(cycles, cycles + blocks);
+  // Reset/prewarm again before returning to live audio. Existing fade-in avoids
+  // resuming with the deterministic benchmark's history in the active model.
+  const bool restored = SelectCaptureSlot(active_capture_slot, false);
+  capture_transition.BeginFadeIn();
+  hw.StartAudio(AudioCallback);
+  if(!restored)
+    QueueCaptureReply("HNAM ERR benchmark_restore_failed");
+  else
+    QueueCaptureReply("HNAM OK BENCH engine=%s slot=%c crc=%08lx frames=48 blocks=256 hz=%lu mean=%lu p99=%lu max=%lu checksum=%08lx",
+        implementation, 'A' + active_capture_slot,
+        static_cast<unsigned long>(info.crc32),
+        static_cast<unsigned long>(System::GetSysClkFreq()),
+        static_cast<unsigned long>(total / blocks),
+        static_cast<unsigned long>(cycles[253]),
+        static_cast<unsigned long>(cycles[blocks - 1]),
+        static_cast<unsigned long>(checksum));
+  return true;
 }
 
 } // namespace
@@ -1245,7 +1323,6 @@ int main()
   // still a useful standalone IR, EQ, and reverb processor.
   effect_enabled = true;
   hw.StartAudio(AudioCallback);
-  BenchmarkModel();
 
   uint32_t last_log_ms = System::GetNow();
   while(true)
