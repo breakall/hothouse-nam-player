@@ -2,8 +2,11 @@ IR ?=
 IR_A ?= $(IR)
 IR_B ?=
 USE_IR ?= 0
-NAM_ENGINE ?= legacy
-FIRMWARE_BUILD_DIR ?= $(if $(filter tone3000,$(NAM_ENGINE)),build/firmware-tone3000,build/firmware)
+NAM_ENGINE ?= tone3000
+FIRMWARE_BUILD_DIR ?= $(if $(filter legacy,$(NAM_ENGINE)),build/firmware-legacy,build/firmware)
+ifeq ($(filter $(NAM_ENGINE),legacy tone3000),)
+$(error NAM_ENGINE must be legacy or tone3000)
+endif
 CAPTURE ?=
 SLOT ?= A
 HOST_CXX ?= c++
@@ -20,7 +23,7 @@ endif
 
 A2_RUNTIME = external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam/nam_a2_runtime.h
 
-.PHONY: firmware clean-firmware setup-a2 require-ir embed-ir-bank install-capture list-captures test
+.PHONY: firmware clean-firmware setup-a2 setup-tone3000 test-engines require-ir embed-ir-bank install-capture list-captures test
 
 test: $(HOST_TEST_BUILD)/capture_loader_test $(HOST_TEST_BUILD)/capture_transition_test $(HOST_TEST_BUILD)/reverb_engines_test
 	$(HOST_TEST_BUILD)/capture_loader_test
@@ -58,7 +61,6 @@ firmware: require-ir embed-ir-bank
 setup-a2:
 	./tools/setup_a2_dependencies.sh
 
-.PHONY: setup-tone3000 test-engines
 setup-tone3000:
 	sh tools/setup_tone3000_dependencies.sh
 

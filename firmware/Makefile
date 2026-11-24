@@ -17,7 +17,8 @@ LDFLAGS = -u _printf_float
 LDFLAGS += -T"$(abspath nam_a2_sections.lds)"
 IR ?=
 USE_IR ?= 0
-NAM_ENGINE ?= legacy
+STRESS_TEST ?= 0
+NAM_ENGINE ?= tone3000
 ifeq ($(filter $(NAM_ENGINE),legacy tone3000),)
 $(error NAM_ENGINE must be legacy or tone3000)
 endif
@@ -33,16 +34,18 @@ CPP_SOURCES = \
   hothouse.cpp
 
 C_INCLUDES = \
-  -I. \
-  -I../external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam
+  -I.
 ifeq ($(NAM_ENGINE),tone3000)
 C_INCLUDES += -I$(TONE3000_DIR)
+else
+C_INCLUDES += -I../external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam
 endif
 
 C_DEFS = \
   -DHOTHOUSE_DIAGNOSTIC=0 \
   -DHOTHOUSE_SIZE_BUILD=0 \
   -DHOTHOUSE_USE_IR=$(USE_IR) \
+  -DHOTHOUSE_STRESS_TEST=$(STRESS_TEST) \
   -D__ARM_ARCH_7EM__
 C_DEFS += -DHOTHOUSE_ENGINE_TONE3000=$(if $(filter tone3000,$(NAM_ENGINE)),1,0) \
   -DNAM_A2LITE_MAX_BUFFER_SIZE=48

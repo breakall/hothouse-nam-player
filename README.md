@@ -8,17 +8,17 @@ user-installable capture slots.
 
 `mono input -> input gain -> optional A2-Lite model -> optional cabinet IR -> 3-band EQ -> reverb -> output level -> stereo output`
 
-The A2-Lite evaluator was hardware-validated with a Fender Princeton full-rig
-capture. Model processing, bypass, LEDs, controls, and capture switching were
-stable without a deadline fault. A smooth input noise gate prevents the
-Hothouse input-stage noise floor from exciting the model while preserving
-quiet note decay.
+The default evaluator is the TONE3000 Cortex-M7 A2-Lite engine, validated
+on the connected Hothouse with installed captures. A smooth input noise gate
+prevents the Hothouse input-stage noise floor from exciting the model while
+preserving quiet note decay. See the measured effects-chain limits below.
 
 `firmware/hothouse_nam_host.cpp` owns product behavior and uses the small
 `firmware/nam_engine.h` interface. `firmware/nam_engine.cpp` loads the
-1,871 selected floating-point weights into the fixed A2-Lite runtime and
-invokes its specialized 48-sample kernel. The host tool and web editor search
-every model in a Tone3000 slimmable download, select a compatible A2-Lite
+1,871 selected floating-point weights into the TONE3000 runtime and
+processes 48-sample blocks. Engine code runs in ITCM, weights and hot state
+in DTCM, and delay histories in cached AXI SRAM. The host tool and web editor
+search every model in a Tone3000 slimmable download, select a compatible A2-Lite
 submodel, and transfer the same tagged weight payload used by all three slots.
 
 ## Controls
@@ -54,7 +54,7 @@ Requirements:
 ```sh
 git clone --recursive https://github.com/breakall/hothouse-nam-player.git
 cd hothouse-nam-player
-make setup-a2
+make setup-tone3000
 make firmware USE_IR=0
 ```
 
@@ -138,81 +138,41 @@ make test
 
 The suite covers capture parsing and flash persistence, mute/settle/load/fade
 transitions, reverb engines, A2 model selection and validation, and installer
-transfer cancellation. Hardware cycle profiling is still required for the
-heaviest IR and reverb combinations.
+transfer cancellation. `make test-engines` additionally compares both engines
+with NAMCore reference output after both runtime dependencies are installed.
 
-## Experimental engine comparison
+## Performance and diagnostics
 
-The default engine remains the existing DaisySeedProjects runtime. To try the
-TONE3000 Cortex-M7 A2-Lite engine behind the same `nam_engine.h` interface:
+TONE3000 is the default A2-Lite engine. On the connected Hothouse, it used
+40.39% fewer engine cycles than the original runtime: 39.83% versus 66.82%
+of the 1 ms block budget with the same installed Hiwatt capture. Both kernels
+passed the same 96,000-sample NAMCore reference test.
+
+The maximum 1,024-tap IR plus reverb exceeds the current full-chain budget.
+With FDN16, warmed processing averaged 124.63% and peaked at 127.05%; a
+prewarmed live callback also tripped the deadline guard. IR length support is
+not a guarantee that every effects combination can run in real time.
+
+The [benchmark report](benchmarks/README.md) contains raw measurements, build
+identities, limits, and reproduction commands. Its full-chain diagnostic is
+compiled only with `STRESS_TEST=1` and `USE_IR=1`; normal firmware excludes it.
+`HNAM ENGINE` identifies the implementation while the capture/editor protocol
+continues to report `a2_lite`. Existing captures need no conversion.
+
+For optional fallback or numerical comparison with the previous runtime:
 
 ```sh
-make setup-tone3000
+make setup-a2
 make test-engines
 make firmware NAM_ENGINE=legacy USE_IR=0
-make firmware NAM_ENGINE=tone3000 USE_IR=0
 ```
 
-The two binaries are kept separately at
-`firmware/build/firmware/hothouse_nam.bin` and
-`firmware/build/firmware-tone3000/hothouse_nam.bin`. Both use BOOT_SRAM, the same
-48 kHz / 48-frame host, gain/effects code, capture slots, `a2_lite` USB identity
-and finite-weight validation. No capture conversion or reinstall is needed.
-The candidate runs its code in ITCM, hot weights/instance in DTCM and histories
-in cached AXI SRAM; the legacy runtime keeps its existing placement (code in
-AXI SRAM and histories in D2 SRAM). This compares the deployed configurations,
-not just isolated kernel instruction counts.
-
-`make test-engines` compares both kernels with the same 96,000-frame NAMCore
-golden input/output and capture at 48-frame blocks. Host verification on
-2026-11-24 passed: legacy max absolute error `2.0862e-7`, ESR `-136.02 dB`;
-TONE3000 `2.3842e-7`, `-135.07 dB`; candidate versus legacy `-134.51 dB`.
-These verify numerical agreement; they do not measure target CPU load.
-
-Both complete firmware variants also cross-compiled with Arm GNU 15.2.1,
-`-O3`, `USE_IR=0`, based on `2456ab2`. The resulting binary sizes are
-147,332 bytes (legacy) and 168,916 bytes (TONE3000). Linker-region usage:
-
-| Region | Legacy | TONE3000 |
-| --- | ---: | ---: |
-| AXI SRAM | 147,332 B | 271,424 B |
-| DTCM | 40,864 B | 38,336 B |
-| D2 SRAM | 76,640 B | 0 B |
-| ITCM | 0 B | 28,136 B |
-
-Candidate AXI SRAM includes its 102,472-byte history and the ITCM load image;
-the ITCM figure is runtime placement, so it must not be added again to the
-binary size. These are memory/build results, not a speed comparison.
-
-For target timing, flash each built binary using the procedure above, keeping
-the same capture installed and the capture toggle at the same position. Then
-run with direct hardware access:
-
-```sh
-python3 tools/benchmark_engine.py --port /dev/cu.usbmodem3466376232331
-```
-
-`HNAM ENGINE` reports `legacy` or `tone3000` without changing the protocol's
-model-family identity. `HNAM BENCH` temporarily stops audio, reloads/prewarms
-the current slot, warms 32 blocks, and times 256 deterministic xorshift32
-blocks (seed `0x48534e41`, +/-0.1 input). It reports capture CRC, clock,
-mean/p99/max cycles and an output checksum. IRQs are excluded from each timed
-engine call; stimulus generation, output checksum and USB printing are outside
-the timing window. The checksum is for repeatability within a backend, not
-bit equality across engines with different accumulation order. The model is
-reloaded/prewarmed and faded in before live audio resumes. No flash data is
-modified by benchmarking.
-
-Compare only runs with the same capture CRC, 480 MHz clock and build settings.
-Repeat at least three times. Engine-only load is cycles / 480,000 per block;
-it does not include IR, EQ, reverb, IRQ overhead or transition work. The normal
-callback's existing cycle/deadline diagnostics still need to be checked for
-the desired complete effect chain before selecting a production default.
-Hardware timings are pending a connected pedal; no speedup has been measured.
+Legacy firmware is written to `firmware/build/firmware-legacy/hothouse_nam.bin`.
 
 ## Licensing
 
 Project firmware is GPL-3.0, matching HothouseExamples. libDaisy and DaisySP
 retain their licenses. The A2 evaluator uses a pinned MIT-licensed runtime
-from DaisySeedProjects; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+from TONE3000, with the original DaisySeedProjects runtime retained as an
+optional fallback; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 Captures and cabinet IRs are not included; users must supply licensed assets.

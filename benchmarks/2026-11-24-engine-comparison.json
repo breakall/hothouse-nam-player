@@ -1,0 +1,341 @@
+{
+  "experiment_commit": "08aeca9e95fe0ce08d07f13bdfc8f2a942293e8f",
+  "baseline_commit": "2456ab2c4fc5949d42f041a5b90b2f5b8155b573",
+  "tone3000_commit": "b84b60c652cb386ea341be50b8c665ae8a489cff",
+  "settings": {
+    "sample_rate": 48000,
+    "block_frames": 48,
+    "USE_IR": 0,
+    "optimization": "-O3"
+  },
+  "host_verification": {
+    "samples": 96000,
+    "legacy_max_abs_error": 2.08616257e-07,
+    "tone3000_max_abs_error": 2.38418579e-07,
+    "candidate_vs_legacy_esr_db": -134.51,
+    "passed": true
+  },
+  "binaries": {
+    "legacy": {
+      "path": "firmware/build/firmware/hothouse_nam.bin",
+      "size_bytes": 147332,
+      "sha256": "b6c4088f611247a72570b2a82b72aa88026e38d79428775da6531f35e6d188a0"
+    },
+    "tone3000": {
+      "path": "firmware/build/firmware-tone3000/hothouse_nam.bin",
+      "size_bytes": 168916,
+      "sha256": "a16f310fd519af5eddbba105de8a8ebcc0a4d1506b32af9c4aea9b60eaf7e392"
+    }
+  },
+  "hardware": {
+    "usb_serial": "346637623233",
+    "capture": "Hiwatt DR 103 Edgy Bridged",
+    "slot": "B",
+    "crc": "e66f25f3",
+    "runs_per_engine": 5,
+    "warmup_blocks_per_run": 32,
+    "timed_blocks_per_run": 256
+  },
+  "results": {
+    "legacy": {
+      "engine": "legacy",
+      "info": [
+        "INFO",
+        "a2_lite",
+        "installed",
+        "7484",
+        "e66f25f3"
+      ],
+      "runs": [
+        {
+          "engine": "legacy",
+          "slot": "B",
+          "crc": "e66f25f3",
+          "frames": 48,
+          "blocks": 256,
+          "hz": 480000000,
+          "mean": 320712,
+          "p99": 321077,
+          "max": 321163,
+          "checksum": "42d099a6",
+          "mean_cpu_percent": 66.815,
+          "p99_cpu_percent": 66.89104166666667,
+          "max_cpu_percent": 66.90895833333333
+        },
+        {
+          "engine": "legacy",
+          "slot": "B",
+          "crc": "e66f25f3",
+          "frames": 48,
+          "blocks": 256,
+          "hz": 480000000,
+          "mean": 320706,
+          "p99": 321019,
+          "max": 321080,
+          "checksum": "42d099a6",
+          "mean_cpu_percent": 66.81375,
+          "p99_cpu_percent": 66.87895833333333,
+          "max_cpu_percent": 66.89166666666667
+        },
+        {
+          "engine": "legacy",
+          "slot": "B",
+          "crc": "e66f25f3",
+          "frames": 48,
+          "blocks": 256,
+          "hz": 480000000,
+          "mean": 320725,
+          "p99": 321097,
+          "max": 321143,
+          "checksum": "42d099a6",
+          "mean_cpu_percent": 66.81770833333333,
+          "p99_cpu_percent": 66.89520833333333,
+          "max_cpu_percent": 66.90479166666667
+        },
+        {
+          "engine": "legacy",
+          "slot": "B",
+          "crc": "e66f25f3",
+          "frames": 48,
+          "blocks": 256,
+          "hz": 480000000,
+          "mean": 320710,
+          "p99": 321057,
+          "max": 321100,
+          "checksum": "42d099a6",
+          "mean_cpu_percent": 66.81458333333333,
+          "p99_cpu_percent": 66.886875,
+          "max_cpu_percent": 66.89583333333333
+        },
+        {
+          "engine": "legacy",
+          "slot": "B",
+          "crc": "e66f25f3",
+          "frames": 48,
+          "blocks": 256,
+          "hz": 480000000,
+          "mean": 320722,
+          "p99": 321059,
+          "max": 321073,
+          "checksum": "42d099a6",
+          "mean_cpu_percent": 66.81708333333333,
+          "p99_cpu_percent": 66.88729166666667,
+          "max_cpu_percent": 66.89020833333333
+        }
+      ],
+      "slots": [
+        [
+          "SLOT",
+          "A",
+          "installed",
+          "a2_weights_f32",
+          "7484",
+          "9a4dd6b3",
+          "564f5820414333302054423620414c4e49434f20424c55452045444745"
+        ],
+        [
+          "SLOT",
+          "B",
+          "installed",
+          "a2_weights_f32",
+          "7484",
+          "e66f25f3",
+          "4869776174742044522031303320456467792042726964676564"
+        ],
+        [
+          "SLOT",
+          "C",
+          "installed",
+          "a2_weights_f32",
+          "7484",
+          "50707312",
+          "464e4452204246535220564220456467652057524d32204341422046524545"
+        ]
+      ],
+      "reverb": [
+        "REVERB",
+        "INFO",
+        "up=dattorro",
+        "down=hybrid"
+      ],
+      "level": [
+        "LEVEL",
+        "INFO",
+        "enabled=0",
+        "A=0",
+        "B=0",
+        "C=0"
+      ],
+      "median_mean_cycles": 320712,
+      "median_mean_cpu_percent": 66.815,
+      "scope": "Engine only, warm cache, IRQ excluded; deterministic +/-0.1 xorshift input. Not total callback.",
+      "live_callback": {
+        "samples_cycles": [
+          327249,
+          327115,
+          326915,
+          327127,
+          327043,
+          327031,
+          326951
+        ],
+        "observed_max_cycles": 328764,
+        "scope": "Brief live-input observation at existing panel settings, USE_IR=0; not a deterministic full-chain stress test."
+      }
+    },
+    "tone3000": {
+      "engine": "tone3000",
+      "info": [
+        "INFO",
+        "a2_lite",
+        "installed",
+        "7484",
+        "e66f25f3"
+      ],
+      "runs": [
+        {
+          "engine": "tone3000",
+          "slot": "B",
+          "crc": "e66f25f3",
+          "frames": 48,
+          "blocks": 256,
+          "hz": 480000000,
+          "mean": 191174,
+          "p99": 192955,
+          "max": 193649,
+          "checksum": "d24e027f",
+          "mean_cpu_percent": 39.82791666666667,
+          "p99_cpu_percent": 40.19895833333333,
+          "max_cpu_percent": 40.34354166666667
+        },
+        {
+          "engine": "tone3000",
+          "slot": "B",
+          "crc": "e66f25f3",
+          "frames": 48,
+          "blocks": 256,
+          "hz": 480000000,
+          "mean": 191187,
+          "p99": 193119,
+          "max": 193739,
+          "checksum": "d24e027f",
+          "mean_cpu_percent": 39.830625,
+          "p99_cpu_percent": 40.233125,
+          "max_cpu_percent": 40.362291666666664
+        },
+        {
+          "engine": "tone3000",
+          "slot": "B",
+          "crc": "e66f25f3",
+          "frames": 48,
+          "blocks": 256,
+          "hz": 480000000,
+          "mean": 191173,
+          "p99": 192931,
+          "max": 193657,
+          "checksum": "d24e027f",
+          "mean_cpu_percent": 39.827708333333334,
+          "p99_cpu_percent": 40.193958333333335,
+          "max_cpu_percent": 40.34520833333333
+        },
+        {
+          "engine": "tone3000",
+          "slot": "B",
+          "crc": "e66f25f3",
+          "frames": 48,
+          "blocks": 256,
+          "hz": 480000000,
+          "mean": 191182,
+          "p99": 192999,
+          "max": 193533,
+          "checksum": "d24e027f",
+          "mean_cpu_percent": 39.82958333333333,
+          "p99_cpu_percent": 40.208125,
+          "max_cpu_percent": 40.319375
+        },
+        {
+          "engine": "tone3000",
+          "slot": "B",
+          "crc": "e66f25f3",
+          "frames": 48,
+          "blocks": 256,
+          "hz": 480000000,
+          "mean": 191184,
+          "p99": 193013,
+          "max": 193515,
+          "checksum": "d24e027f",
+          "mean_cpu_percent": 39.83,
+          "p99_cpu_percent": 40.21104166666667,
+          "max_cpu_percent": 40.315625
+        }
+      ],
+      "slots": [
+        [
+          "SLOT",
+          "A",
+          "installed",
+          "a2_weights_f32",
+          "7484",
+          "9a4dd6b3",
+          "564f5820414333302054423620414c4e49434f20424c55452045444745"
+        ],
+        [
+          "SLOT",
+          "B",
+          "installed",
+          "a2_weights_f32",
+          "7484",
+          "e66f25f3",
+          "4869776174742044522031303320456467792042726964676564"
+        ],
+        [
+          "SLOT",
+          "C",
+          "installed",
+          "a2_weights_f32",
+          "7484",
+          "50707312",
+          "464e4452204246535220564220456467652057524d32204341422046524545"
+        ]
+      ],
+      "reverb": [
+        "REVERB",
+        "INFO",
+        "up=dattorro",
+        "down=hybrid"
+      ],
+      "level": [
+        "LEVEL",
+        "INFO",
+        "enabled=0",
+        "A=0",
+        "B=0",
+        "C=0"
+      ],
+      "median_mean_cycles": 191182,
+      "median_mean_cpu_percent": 39.82958333333333,
+      "scope": "Engine only, warm cache, IRQ excluded; deterministic +/-0.1 xorshift input. Not total callback.",
+      "live_callback": {
+        "samples_cycles": [
+          197031,
+          196435,
+          196983,
+          196783,
+          198329,
+          197281,
+          196859,
+          196707
+        ],
+        "observed_max_cycles": 199859,
+        "scope": "Brief live-input observation at existing panel settings, USE_IR=0; not a deterministic full-chain stress test."
+      }
+    }
+  },
+  "comparison": {
+    "cycle_reduction_percent": 40.3882611190102,
+    "throughput_ratio": 1.67752194244228,
+    "cpu_percentage_points_saved": 26.985416666666666,
+    "remaining_firmware": "tone3000",
+    "capture_slots_unchanged": true
+  }
+}

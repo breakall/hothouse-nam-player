@@ -172,7 +172,7 @@ LevelMatchConfigStore<DaisyFlashBackend> level_match_config_store(capture_flash)
 ByteRing<1024> capture_usb_rx;
 char capture_line[320] = {};
 size_t capture_line_length = 0;
-char capture_reply[192] = {};
+char capture_reply[HOTHOUSE_STRESS_TEST ? 256 : 192] = {};
 size_t capture_reply_length = 0;
 
 SmoothedFloat input_gain_smoothed = {1.0f, 1.0f};
@@ -232,6 +232,9 @@ void UsbLog(const char* format, ...);
 bool HandleReverbCommand(char* line);
 bool HandleLevelMatchCommand(char* line);
 bool HandleBenchmarkCommand(const char* line);
+#if HOTHOUSE_STRESS_TEST && HOTHOUSE_USE_IR
+bool HandleStressCommand(const char* line);
+#endif
 bool SaveLevelMatchConfig();
 
 bool StoredCaptureIsCompatible(uint8_t slot, CaptureInfo* output = nullptr)
@@ -1154,8 +1157,204 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
     ApplyCaptureTransition(out, size);
 }
 
+#if HOTHOUSE_STRESS_TEST && HOTHOUSE_USE_IR
+// Dedicated diagnostic build only. The normal AudioCallback remains the DSP
+// under test, called from the real SAI interrupt with all other IRQs enabled.
+// The wrapper's stimulus, finite check and output muting are INCLUDED in the
+// reported duration, making the result conservative for the product callback.
+constexpr uint32_t kStressWarmup = 2000;
+constexpr uint32_t kStressMaximumBlocks = 60000;
+DSY_SDRAM_BSS uint32_t stress_cycles[kStressMaximumBlocks];
+volatile uint32_t stress_blocks = 0;
+volatile uint32_t stress_warmup_blocks = 0;
+uint32_t stress_target_blocks = 0;
+uint32_t stress_rng = 0;
+uint32_t stress_warmup_max = 0;
+uint32_t stress_nonfinite = 0;
+uint32_t stress_peak_bits = 0;
+uint32_t stress_overruns = 0;
+
+void StressAudioCallback(AudioHandle::InputBuffer,
+                         AudioHandle::OutputBuffer out, size_t size)
+{
+  if(stress_blocks >= stress_target_blocks || !effect_enabled)
+  {
+    for(size_t i = 0; i < size; ++i)
+      out[0][i] = out[1][i] = 0.0f;
+    return;
+  }
+  const uint32_t start = DWT->CYCCNT;
+  float stimulus[kAudioBlockSize];
+  if(size != kAudioBlockSize)
+  {
+    effect_enabled = false;
+    return;
+  }
+  for(float& sample : stimulus)
+  {
+    stress_rng ^= stress_rng << 13;
+    stress_rng ^= stress_rng >> 17;
+    stress_rng ^= stress_rng << 5;
+    sample = (static_cast<float>(stress_rng & 0xffffU) / 65535.0f - 0.5f) * 0.2f;
+  }
+  const float* inputs[] = {stimulus, stimulus};
+  AudioCallback(inputs, out, size);
+  for(size_t i = 0; i < size; ++i)
+    for(size_t channel = 0; channel < 2; ++channel)
+    {
+      uint32_t bits;
+      std::memcpy(&bits, &out[channel][i], sizeof(bits));
+      bits &= 0x7fffffffU;
+      // Use the IEEE bits: -ffast-math may eliminate std::isfinite checks.
+      if(bits >= 0x7f800000U)
+        ++stress_nonfinite;
+      else if(bits > stress_peak_bits)
+        stress_peak_bits = bits;
+      out[channel][i] = 0.0f;
+    }
+  const uint32_t elapsed = DWT->CYCCNT - start;
+  if(elapsed >= kCycleBudget)
+  {
+    ++stress_overruns;
+    effect_enabled = false;
+  }
+  if(stress_warmup_blocks < kStressWarmup)
+  {
+    stress_warmup_max = std::max(stress_warmup_max, elapsed);
+    ++stress_warmup_blocks;
+  }
+  else
+  {
+    stress_cycles[stress_blocks] = elapsed;
+    ++stress_blocks;
+  }
+}
+
+bool HandleStressCommand(const char* line)
+{
+  const bool offline = std::strncmp(line, "HNAM STRESSOFF ", 15) == 0;
+  const bool primed = std::strncmp(line, "HNAM STRESSWARM ", 16) == 0;
+  if(!offline && !primed && std::strncmp(line, "HNAM STRESS ", 12) != 0)
+    return false;
+  char name[16], extra;
+  unsigned long requested;
+  if(std::sscanf(line + (offline ? 15 : primed ? 16 : 12), "%15s %lu %c", name, &requested, &extra) != 2
+     || requested < 1000 || requested > kStressMaximumBlocks)
+  {
+    QueueCaptureReply("HNAM ERR stress_syntax");
+    return true;
+  }
+  const ReverbId id = hothouse_nam::ParseReverbId(name);
+  CaptureInfo capture;
+  if(id == ReverbId::Invalid || !model_engine::IsLoaded()
+     || capture_store.Inspect(active_capture_slot, &capture) != CaptureSlotState::Valid
+     || embedded_ir_bank::kEntries[0].length != kMaxIrLength)
+  {
+    QueueCaptureReply("HNAM ERR stress_requires_reverb_capture_1024tap_ir");
+    return true;
+  }
+  hw.StopAudio();
+  const ReverbSlotConfig previous_config = reverb_rack->Config();
+  const bool previous_effect = effect_enabled;
+  const bool previous_reverb = reverb_enabled;
+  const ReverbRack::Position previous_position = reverb_position;
+  const uint8_t previous_ir = active_ir_index;
+  SmoothedFloat* controls[] = {&input_gain_smoothed, &output_smoothed,
+      &level_match_smoothed, &reverb_mix_smoothed, &bass_gain_smoothed,
+      &mid_gain_smoothed, &treble_gain_smoothed};
+  SmoothedFloat previous_controls[7];
+  for(size_t i = 0; i < 7; ++i)
+  {
+    previous_controls[i] = *controls[i];
+    controls[i]->current = controls[i]->target = i == 3 ? 0.5f : 1.0f;
+  }
+  const ReverbSlotConfig test_config = {
+      id, id == ReverbId::Dattorro ? ReverbId::HybridSpace : ReverbId::Dattorro};
+  reverb_ready = reverb_rack->Configure(test_config);
+  const bool loaded = SelectCaptureSlot(active_capture_slot, false);
+  cabinet_irs[0].Reset();
+  active_ir_index = 0;
+  reverb_enabled = true;
+  reverb_position = ReverbRack::Position::Up;
+  input_envelope = input_gate_gain = 0.0f;
+  input_gate_open = false;
+  bass_lowpass_state = treble_lowpass_state = 0.0f;
+  capture_transition.Initialize(active_capture_slot);
+  stress_target_blocks = static_cast<uint32_t>(requested);
+  stress_blocks = stress_warmup_blocks = 0;
+  stress_warmup_max = stress_nonfinite = stress_peak_bits = stress_overruns = 0;
+  stress_rng = 0x48534e41U;
+  effect_enabled = reverb_ready && loaded;
+  const bool test_ready = effect_enabled;
+  const uint32_t started = System::GetNow();
+  float offline_output[2][kAudioBlockSize];
+  float* outputs[] = {offline_output[0], offline_output[1]};
+  // Offline timing allows an overloaded chain to finish without saturating
+  // the audio IRQ. Primed mode instead warms the whole chain here, then tests
+  // whether its steady-state work meets deadlines in the real SAI callback.
+  if(test_ready && (offline || primed))
+    for(uint32_t block = 0; block < kStressWarmup + (offline ? requested : 0); ++block)
+    {
+      effect_enabled = true;
+      StressAudioCallback(nullptr, outputs, kAudioBlockSize);
+    }
+  const uint32_t prime_max = primed ? stress_warmup_max : 0;
+  if(primed)
+  {
+    stress_warmup_max = stress_overruns = 0;
+    effect_enabled = test_ready;
+  }
+  if(!offline)
+  {
+    hw.StartAudio(StressAudioCallback);
+    while(stress_blocks < stress_target_blocks && effect_enabled
+          && System::GetNow() - started < (requested + kStressWarmup) * 2 + 5000)
+    {
+      hw.ProcessAllControls();
+      System::Delay(5);
+    }
+    hw.StopAudio();
+  }
+  const uint32_t wall_ms = System::GetNow() - started;
+  const uint32_t count = stress_blocks;
+  uint64_t sum = 0;
+  for(uint32_t i = 0; i < count; ++i)
+    sum += stress_cycles[i];
+  std::sort(stress_cycles, stress_cycles + count);
+  const uint32_t mean = count ? sum / count : 0;
+  const uint32_t p99 = count ? stress_cycles[(count * 99 + 99) / 100 - 1] : 0;
+  const uint32_t maximum = count ? stress_cycles[count - 1] : 0;
+  reverb_ready = reverb_rack->Configure(previous_config);
+  const bool restored = SelectCaptureSlot(active_capture_slot, false);
+  for(size_t i = 0; i < 7; ++i)
+    *controls[i] = previous_controls[i];
+  cabinet_irs[0].Reset();
+  active_ir_index = previous_ir;
+  reverb_enabled = previous_reverb;
+  reverb_position = previous_position;
+  effect_enabled = previous_effect && restored && reverb_ready;
+  capture_transition.BeginFadeIn();
+  hw.StartAudio(AudioCallback);
+  QueueCaptureReply("HNAM OK STRESS rv=%s mode=%s crc=%08lx n=%lu mean=%lu p99=%lu max=%lu warm=%lu prime=%lu over=%lu bad=%lu peak=%08lx ms=%lu restore=%u",
+      name, offline ? "offline" : primed ? "warm" : "live", static_cast<unsigned long>(capture.crc32),
+      static_cast<unsigned long>(count), static_cast<unsigned long>(mean),
+      static_cast<unsigned long>(p99), static_cast<unsigned long>(maximum),
+      static_cast<unsigned long>(stress_warmup_max),
+      static_cast<unsigned long>(prime_max),
+      static_cast<unsigned long>(stress_overruns),
+      static_cast<unsigned long>(stress_nonfinite),
+      static_cast<unsigned long>(stress_peak_bits),
+      static_cast<unsigned long>(wall_ms), restored && reverb_ready ? 1U : 0U);
+  return true;
+}
+#endif
+
 bool HandleBenchmarkCommand(const char* line)
 {
+#if HOTHOUSE_STRESS_TEST && HOTHOUSE_USE_IR
+  if(HandleStressCommand(line))
+    return true;
+#endif
 #if HOTHOUSE_ENGINE_TONE3000
   constexpr const char* implementation = "tone3000";
 #else
