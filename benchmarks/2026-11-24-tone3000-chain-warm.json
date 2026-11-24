@@ -1,0 +1,122 @@
+{
+  "info": [
+    "INFO",
+    "a2_lite",
+    "installed",
+    "7484",
+    "e66f25f3"
+  ],
+  "runs": [
+    {
+      "rv": "fdn16",
+      "mode": "warm",
+      "crc": "e66f25f3",
+      "n": 1,
+      "mean": 594198,
+      "p99": 594198,
+      "max": 594198,
+      "warm": 0,
+      "prime": 605330,
+      "over": 1,
+      "bad": 0,
+      "peak": "3ba5329a",
+      "ms": 2494,
+      "restore": 1,
+      "peak_output": 0.0050414325669407845,
+      "hz": 480000000,
+      "budget_cycles": 480000.0,
+      "mean_cpu_percent": 123.79125,
+      "p99_cpu_percent": 123.79125,
+      "max_cpu_percent": 123.79125,
+      "warm_cpu_percent": 0.0,
+      "worst_headroom_percent": -23.791250000000005,
+      "passed": false
+    }
+  ],
+  "mode": "warm",
+  "scope": "Full AudioCallback, 48 kHz/48 frames, NAM + dense 1024-tap FIR + EQ + stereo reverb. Includes stimulus generation, output checks and muting. IRQs enabled; excludes libDaisy DMA conversion and IRQ entry/exit. 2000 warmup blocks; xorshift32 seed 0x48534e41, +/-0.1; unity gains, flat EQ, 50% reverb mix; factory reverb parameters decay=.62/damping=.42/size=.72/modulation=.25. Synthetic IR measures CPU cost, not cabinet audio quality. WARM: real SAI IRQ, entire chain primed for 2000 blocks before SAI starts; prime records the priming peak.",
+  "engine": "tone3000",
+  "reverb_before": [
+    "REVERB",
+    "INFO",
+    "up=dattorro",
+    "down=hybrid"
+  ],
+  "slots_before": [
+    [
+      "SLOT",
+      "A",
+      "installed",
+      "a2_weights_f32",
+      "7484",
+      "9a4dd6b3",
+      "564f5820414333302054423620414c4e49434f20424c55452045444745"
+    ],
+    [
+      "SLOT",
+      "B",
+      "installed",
+      "a2_weights_f32",
+      "7484",
+      "e66f25f3",
+      "4869776174742044522031303320456467792042726964676564"
+    ],
+    [
+      "SLOT",
+      "C",
+      "installed",
+      "a2_weights_f32",
+      "7484",
+      "50707312",
+      "464e4452204246535220564220456467652057524d32204341422046524545"
+    ]
+  ],
+  "engine_reference": {
+    "engine": "tone3000",
+    "slot": "B",
+    "crc": "e66f25f3",
+    "frames": "48",
+    "blocks": "256",
+    "hz": "480000000",
+    "mean": "191224",
+    "p99": "192757",
+    "max": "193885",
+    "checksum": "d24e027f"
+  },
+  "reverb_after": [
+    "REVERB",
+    "INFO",
+    "up=dattorro",
+    "down=hybrid"
+  ],
+  "slots_after": [
+    [
+      "SLOT",
+      "A",
+      "installed",
+      "a2_weights_f32",
+      "7484",
+      "9a4dd6b3",
+      "564f5820414333302054423620414c4e49434f20424c55452045444745"
+    ],
+    [
+      "SLOT",
+      "B",
+      "installed",
+      "a2_weights_f32",
+      "7484",
+      "e66f25f3",
+      "4869776174742044522031303320456467792042726964676564"
+    ],
+    [
+      "SLOT",
+      "C",
+      "installed",
+      "a2_weights_f32",
+      "7484",
+      "50707312",
+      "464e4452204246535220564220456467652057524d32204341422046524545"
+    ]
+  ],
+  "settings_restored": true
+}

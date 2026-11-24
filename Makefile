@@ -2,6 +2,11 @@ IR ?=
 IR_A ?= $(IR)
 IR_B ?=
 USE_IR ?= 0
+NAM_ENGINE ?= tone3000
+FIRMWARE_BUILD_DIR ?= $(if $(filter legacy,$(NAM_ENGINE)),build/firmware-legacy,build/firmware)
+ifeq ($(filter $(NAM_ENGINE),legacy tone3000),)
+$(error NAM_ENGINE must be legacy or tone3000)
+endif
 CAPTURE ?=
 SLOT ?= A
 HOST_CXX ?= c++
@@ -18,7 +23,7 @@ endif
 
 A2_RUNTIME = external/DaisySeedProjects/Software/GuitarPedal/Effect-Modules/Nam/nam_a2_runtime.h
 
-.PHONY: firmware clean-firmware setup-a2 require-ir embed-ir-bank install-capture list-captures test
+.PHONY: firmware clean-firmware setup-a2 setup-tone3000 test-engines require-ir embed-ir-bank install-capture list-captures test
 
 test: $(HOST_TEST_BUILD)/capture_loader_test $(HOST_TEST_BUILD)/capture_transition_test $(HOST_TEST_BUILD)/reverb_engines_test
 	$(HOST_TEST_BUILD)/capture_loader_test
@@ -47,16 +52,23 @@ embed-ir-bank: require-ir
 	@test "$(USE_IR)" = "0" || python3 tools/embed_ir_bank.py "$(IR_A)" $(if $(IR_B),"$(IR_B)") -o firmware/embedded_ir_bank.h
 
 firmware: require-ir embed-ir-bank
-	@test -f "$(A2_RUNTIME)" || { echo "A2 runtime missing; run: make setup-a2" >&2; exit 2; }
+	@test "$(NAM_ENGINE)" != "legacy" || test -f "$(A2_RUNTIME)" || { echo "A2 runtime missing; run: make setup-a2" >&2; exit 2; }
+	@test "$(NAM_ENGINE)" != "tone3000" || test -f external/tone3000-embedded/engines/cortex-m7/a2lite/nam_a2lite.c || { echo "TONE3000 engine missing; run: make setup-tone3000" >&2; exit 2; }
 	mkdir -p firmware/build
-	$(MAKE) -C firmware BUILD_DIR=build/firmware clean
-	$(MAKE) -C firmware BUILD_DIR=build/firmware USE_IR=$(USE_IR)
+	$(MAKE) -C firmware BUILD_DIR=$(FIRMWARE_BUILD_DIR) clean
+	$(MAKE) -C firmware BUILD_DIR=$(FIRMWARE_BUILD_DIR) USE_IR=$(USE_IR) NAM_ENGINE=$(NAM_ENGINE)
 
 setup-a2:
 	./tools/setup_a2_dependencies.sh
 
+setup-tone3000:
+	sh tools/setup_tone3000_dependencies.sh
+
+test-engines:
+	sh tools/test_engines.sh
+
 clean-firmware:
-	$(MAKE) -C firmware BUILD_DIR=build/firmware clean
+	$(MAKE) -C firmware BUILD_DIR=$(FIRMWARE_BUILD_DIR) clean
 
 install-capture:
 	@test -n "$(CAPTURE)" || { echo "CAPTURE is required" >&2; exit 2; }

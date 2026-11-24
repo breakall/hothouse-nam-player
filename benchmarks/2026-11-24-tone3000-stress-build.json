@@ -1,0 +1,95 @@
+{
+  "settings": {
+    "engine": "tone3000",
+    "USE_IR": 1,
+    "STRESS_TEST": 1,
+    "block_frames": 48,
+    "sample_rate": 48000,
+    "clock_hz": 480000000
+  },
+  "files": {
+    "firmware/build/firmware-tone3000-stress/hothouse_nam.bin": {
+      "sha256": "60b6cb792c7b07f2650e958329c6bdbe961635829ab1b83e6f3f98b12c22aa2a",
+      "bytes": 182612
+    },
+    "firmware/hothouse_nam_host.cpp": {
+      "sha256": "56202217684d6b7df087749704e4d006db88d0d78ede2401c06be6a9bc1e50d7",
+      "bytes": 52686
+    },
+    "firmware/Makefile": {
+      "sha256": "3129165f9a9cbbcbfb7fb610d2bd6c13c1ac5db43c5b8e21603546438daf3153",
+      "bytes": 1787
+    },
+    "firmware/embedded_ir_bank.h": {
+      "sha256": "c35a365fc56fa8b92990c9ff6ad45009b9394dda49ea8e57683078dd7759533a",
+      "bytes": 22124
+    },
+    "tools/benchmark_chain.py": {
+      "sha256": "c74fd6653b952b5a945119e60861f9a950e8825086755c0ca764d76833c5ef9c",
+      "bytes": 5492
+    },
+    "output/engine-benchmark-2026-11-24/stress-ir-1024.wav": {
+      "sha256": "9f190c3ecc4d66aa5faccc3a6727d913591aea806baedab5871c287e99c925c9",
+      "bytes": 4140
+    }
+  },
+  "restoration": {
+    "engine": [
+      "ENGINE",
+      "tone3000"
+    ],
+    "info": [
+      "INFO",
+      "a2_lite",
+      "installed",
+      "7484",
+      "e66f25f3"
+    ],
+    "reverb": [
+      "REVERB",
+      "INFO",
+      "up=dattorro",
+      "down=hybrid"
+    ],
+    "slots": [
+      [
+        "SLOT",
+        "A",
+        "installed",
+        "a2_weights_f32",
+        "7484",
+        "9a4dd6b3",
+        "564f5820414333302054423620414c4e49434f20424c55452045444745"
+      ],
+      [
+        "SLOT",
+        "B",
+        "installed",
+        "a2_weights_f32",
+        "7484",
+        "e66f25f3",
+        "4869776174742044522031303320456467792042726964676564"
+      ],
+      [
+        "SLOT",
+        "C",
+        "installed",
+        "a2_weights_f32",
+        "7484",
+        "50707312",
+        "464e4452204246535220564220456467652057524d32204341422046524545"
+      ]
+    ],
+    "firmware": "firmware/build/firmware-tone3000/hothouse_nam.bin",
+    "USE_IR": 0,
+    "STRESS_TEST": 0,
+    "sha256": "a16f310fd519af5eddbba105de8a8ebcc0a4d1506b32af9c4aea9b60eaf7e392"
+  },
+  "cold_pass_note": "Cold-start passes used the initial diagnostic revision, before offline and primed modes were added. The listed stress build identifies the later offline/warm passes.",
+  "production_verification": {
+    "rebuilt_with_STRESS_TEST": 0,
+    "sha256": "a16f310fd519af5eddbba105de8a8ebcc0a4d1506b32af9c4aea9b60eaf7e392",
+    "byte_identical_to_restored_firmware": true,
+    "host_tests": "make test passed; 3 C++ test executables and 9 Python tests"
+  }
+}
