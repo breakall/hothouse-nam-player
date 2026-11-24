@@ -4,6 +4,8 @@ Open-source A2-Lite NAM firmware for the Cleveland Music Co. Hothouse / Daisy
 Seed. The firmware runs at 48 kHz with 48-sample blocks and supports three
 user-installable capture slots.
 
+![Hothouse NAM Player pedal](assets/hothouse-pedal.jpg)
+
 ## Signal path
 
 `mono input -> input gain -> optional A2-Lite model -> optional cabinet IR -> 3-band EQ -> reverb -> output level -> stereo output`
